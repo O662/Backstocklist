@@ -202,8 +202,8 @@ function startApp() {
     }, REFRESH_MS);
   }
 
-  const fromHash = location.hash.slice(1);
-  go(VIEWS[fromHash] ? fromHash : "report");
+  // Always open on Report, except when a notification tap deep-links to Updates.
+  go(location.hash === "#updates" ? "updates" : "report");
   refreshAll();
   updatePushUI(true);
 }
