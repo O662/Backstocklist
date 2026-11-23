@@ -28,6 +28,11 @@ create table if not exists public.items (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
+-- UPC was added later. Stored as a 14-digit GTIN (with its check digit);
+-- the app draws it as a scannable barcode.
+alter table public.items add column if not exists upc text;
+alter table public.items drop constraint if exists items_upc_check;
+alter table public.items add constraint items_upc_check check (upc ~ '^[0-9]{14}$');
 
 -- Messages for the person who reported an item ("found it" / "can't get it").
 create table if not exists public.notifications (

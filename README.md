@@ -72,7 +72,7 @@ Your keys were generated into **`secrets.local.txt`**. That file is git-ignored,
    | `VAPID_PUBLIC_KEY` | from `secrets.local.txt` |
    | `VAPID_PRIVATE_KEY` | from `secrets.local.txt` |
    | `WEBHOOK_SECRET` | from `secrets.local.txt` |
-   | `VAPID_SUBJECT` | `mailto:` followed by your email address, e.g. `mailto:you@gmail.com` |
+   | `VAPID_SUBJECT` | `mailto:` followed by your email address, Ex: `mailto:you@gmail.com` |
 2. **Deploy the function:** go to **Edge Functions → Deploy a new function → Via Editor**. Name it **`send-push`**, replace the sample code with [`supabase/functions/send-push/index.ts`](supabase/functions/send-push/index.ts), and click **Deploy**.
 3. In the function's **Details / Settings**, turn **off** "Verify JWT" ("Enforce JWT verification"). The function checks `WEBHOOK_SECRET` instead.
 4. **Connect the database to it:** open [`supabase/push.sql`](supabase/push.sql) and replace `YOUR-PROJECT-REF` (the part before `.supabase.co` in your URL) and `YOUR-WEBHOOK-SECRET`. Then paste it into the **SQL Editor** and click **Run**. Don't commit the edited version.

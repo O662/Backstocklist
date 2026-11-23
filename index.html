@@ -71,7 +71,10 @@
           </div>
 
           <label><span>Item <span class="muted">(optional)</span></span>
-            <input id="item-name" maxlength="120" placeholder="e.g. Tide Pods 42ct" autocomplete="off">
+            <input id="item-name" maxlength="120" placeholder="Ex: HEB Flour" autocomplete="off">
+          </label>
+          <label><span>UPC <span class="muted">(optional)</span></span>
+            <input id="item-upc" inputmode="numeric" maxlength="20" placeholder="13-digit number on the tag" autocomplete="off">
           </label>
           <p id="ocr-status" class="muted small ocr-status" aria-live="polite" hidden></p>
 
@@ -79,13 +82,13 @@
             <select id="location-select"></select>
           </label>
           <div id="location-add" class="row" hidden>
-            <input id="location-new" maxlength="60" placeholder="New location, e.g. Aisle 12" aria-label="New location name" autocomplete="off">
+            <input id="location-new" maxlength="60" placeholder="New location, Ex: Aisle 12" aria-label="New location name" autocomplete="off">
             <button type="button" id="location-add-btn" class="btn primary">Add</button>
             <button type="button" id="location-add-cancel" class="btn">Cancel</button>
           </div>
 
           <label><span>Note <span class="muted">(optional)</span></span>
-            <input id="item-note" maxlength="300" placeholder="e.g. need 2 cases" autocomplete="off">
+            <input id="item-note" maxlength="300" placeholder="Ex: need 2 cases" autocomplete="off">
           </label>
 
           <label class="toggle">
@@ -213,7 +216,7 @@
     <form method="dialog" class="stack">
       <h2>Put on hold</h2>
       <p class="muted">Keeps it on the list for later.</p>
-      <input id="hold-note" maxlength="200" placeholder="Why? e.g. need a ladder (optional)">
+      <input id="hold-note" maxlength="200" placeholder="Why? Ex: Bottom of pallet (optional)">
       <div class="row">
         <button class="btn" type="button" data-close>Back</button>
         <button class="btn warn grow" value="ok">Hold</button>
@@ -224,6 +227,13 @@
   <dialog id="dlg-photo" class="photo-viewer">
     <form method="dialog"><button class="photo-close" aria-label="Close">×</button></form>
     <img id="photo-full" alt="Tag photo">
+  </dialog>
+
+  <dialog id="dlg-barcode" class="barcode-viewer" aria-label="Barcode">
+    <form method="dialog"><button class="photo-close" aria-label="Close">×</button></form>
+    <p id="barcode-item" class="barcode-item"></p>
+    <div id="barcode-full" class="barcode-full"></div>
+    <p class="barcode-hint">Turn your screen brightness up if the scanner won't read it.</p>
   </dialog>
 
   <dialog id="dlg-crop" class="cropper" aria-label="Crop photo">

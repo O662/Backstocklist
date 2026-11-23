@@ -732,7 +732,7 @@ async function compressImage(file, maxSide = 1280, quality = 0.72) {
 
 const OCR_SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
 const OCR_IDLE_MS = 120_000; // free the reader's memory after 2 idle minutes
-const ocr = { worker: null, loading: null, run: 0, idle: null, autoName: "" };
+const ocr = { worker: null, loading: null, run: 0, idle: null };
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -777,42 +777,63 @@ function setOcrStatus(text) {
   $("#ocr-status").hidden = !text;
 }
 
-// True while "Item" is empty or still holds what the reader put there.
-function itemNameIsAuto() {
-  const v = $("#item-name").value.trim();
-  return !v || v === ocr.autoName;
+// Fields the reader fills in. Each is only filled while it's empty or still
+// holds what the reader put there, so typing always wins.
+const AUTO_FIELDS = { name: "#item-name", upc: "#item-upc" };
+const AUTO_LABELS = { name: "name", upc: "UPC" };
+ocr.auto = { name: "", upc: "" };
+
+function isAuto(field) {
+  const v = $(AUTO_FIELDS[field]).value.trim();
+  return !v || v === ocr.auto[field];
 }
 
-function setAutoName(name) {
-  $("#item-name").value = name;
-  ocr.autoName = name;
+function setAuto(field, value) {
+  $(AUTO_FIELDS[field]).value = value;
+  ocr.auto[field] = value;
 }
 
-$("#item-name").addEventListener("input", () => {
-  if (!itemNameIsAuto()) setOcrStatus("");
-});
+for (const field of Object.keys(AUTO_FIELDS)) {
+  $(AUTO_FIELDS[field]).addEventListener("input", () => {
+    if (!isAuto(field)) setOcrStatus("");
+  });
+}
+
+const listWords = (fields) => fields.map((f) => AUTO_LABELS[f]).join(" and ");
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 async function readTag(blob, { keepOnFail = false } = {}) {
   const run = ++ocr.run; // a newer photo or crop makes older reads stale
-  if (!itemNameIsAuto()) return setOcrStatus("");
-  if (!keepOnFail) setAutoName(""); // drop the name read from the previous photo
-  if (!blob) return setOcrStatus("");
+  const fields = Object.keys(AUTO_FIELDS).filter(isAuto);
+  if (!keepOnFail) fields.forEach((f) => setAuto(f, "")); // drop results from the previous photo
+  if (!blob || !fields.length) return setOcrStatus("");
 
   setOcrStatus("Reading the tag…");
   try {
     const worker = await getOcrWorker();
     if (run !== ocr.run) return;
-    const { data } = await worker.recognize(await prepForOcr(blob));
-    if (run !== ocr.run || !itemNameIsAuto()) return;
-    const name = pickTagName(data);
-    if (name) {
-      setAutoName(name);
-      setOcrStatus("Name read from the tag. Check it, or crop in on the name to read it again.");
+    const canvas = await prepForOcr(blob);
+    let { data } = await worker.recognize(canvas);
+    if (run !== ocr.run) return;
+    const found = { name: pickTagName(data), upc: pickTagUpc(data) };
+    // Many tags print the UPC sideways, so try again turned a quarter turn.
+    // Show the name first so nobody waits on the second read for it.
+    if (!found.upc && fields.includes("upc")) {
+      if (found.name && fields.includes("name") && isAuto("name")) setAuto("name", found.name);
+      ({ data } = await worker.recognize(rotateLeft(canvas)));
+      if (run !== ocr.run) return;
+      found.upc = pickTagUpc(data);
+    }
+
+    for (const f of fields) if (found[f] && isAuto(f)) setAuto(f, found[f]);
+    const have = fields.filter((f) => ocr.auto[f]); // read now, or kept from before a crop
+    const missing = fields.filter((f) => !ocr.auto[f]);
+    if (!have.length) {
+      setOcrStatus("Couldn't read the tag. Type it in, or crop in on the tag to try again.");
     } else {
       setOcrStatus(
-        keepOnFail && ocr.autoName
-          ? "Couldn't read a better name there, so the earlier one was kept."
-          : "Couldn't read a name. Type it, or crop in on the name to try again.",
+        `${capitalize(listWords(have))} read from the tag. Check ${have.length > 1 ? "them" : "it"} against the tag.` +
+          (missing.length ? ` Couldn't read the ${listWords(missing)}. Type or crop in on it to try again.` : ""),
       );
     }
   } catch (ex) {
@@ -821,6 +842,99 @@ async function readTag(blob, { keepOnFail = false } = {}) {
   } finally {
     if (run === ocr.run) scheduleOcrShutdown();
   }
+}
+
+// Turn a canvas a quarter turn counterclockwise (sideways UPCs read top to bottom).
+function rotateLeft(src) {
+  const canvas = document.createElement("canvas");
+  canvas.width = src.height;
+  canvas.height = src.width;
+  const ctx = canvas.getContext("2d");
+  ctx.translate(0, canvas.height);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return canvas;
+}
+
+// The tag's UPC: a 13-digit number (sometimes a full 12-digit UPC). OCR often
+// reads 0 as O, so fix that before matching.
+function pickTagUpc(data) {
+  let best = null;
+  for (const w of data.words || []) {
+    if (w.confidence < 60) continue;
+    const t = w.text.replace(/^[^0-9Oo]+|[^0-9Oo]+$/g, "").replace(/[Oo]/g, "0");
+    const ok = /^\d{13}$/.test(t) || (/^\d{12}$/.test(t) && toGtin14(t));
+    if (ok && (!best || w.confidence > best.conf)) best = { t, conf: w.confidence };
+  }
+  return best?.t || "";
+}
+
+// ---------- UPC / barcode ----------
+// Shelf tags print the product's code as 13 digits without its last (check)
+// digit, Ex: 0004300020449. Adding the check digit gives the full 14-digit
+// GTIN; for US products that's "00" + the 12-digit UPC on the package.
+
+// Mod-10 check digit used by UPC, EAN and GTIN: weights 3,1,3,1… from the right.
+function gtinCheck(body) {
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) sum += Number(body[body.length - 1 - i]) * (i % 2 ? 1 : 3);
+  return String((10 - (sum % 10)) % 10);
+}
+
+// Accepts the tag's 13 digits, or a full UPC (12 digits), EAN (13 digits,
+// from a package) or GTIN (14 digits). Returns the 14-digit GTIN, or null if
+// it doesn't look valid.
+function toGtin14(input) {
+  const d = String(input || "").replace(/\D/g, "");
+  const valid = (code) => gtinCheck(code.slice(0, -1)) === code.at(-1);
+  // Tag codes start with 0; a 13-digit number that doesn't is a package EAN.
+  if (d.length === 13 && d.startsWith("0")) return d + gtinCheck(d);
+  if (d.length >= 12 && d.length <= 14 && valid(d)) return d.padStart(14, "0");
+  return null;
+}
+
+// How the number is printed under the barcode.
+function upcLabel(gtin) {
+  if (gtin.startsWith("00")) {
+    const u = gtin.slice(2); // UPC-A
+    return `${u[0]} ${u.slice(1, 6)} ${u.slice(6, 11)} ${u[11]}`;
+  }
+  if (gtin.startsWith("0")) {
+    const e = gtin.slice(1); // EAN-13
+    return `${e[0]} ${e.slice(1, 7)} ${e.slice(7)}`;
+  }
+  return gtin;
+}
+
+const EAN_L = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
+const EAN_G = ["0100111", "0110011", "0011011", "0100001", "0011101", "0111001", "0000101", "0010001", "0001001", "0010111"];
+const EAN_R = ["1110010", "1100110", "1101100", "1000010", "1011100", "1001110", "1010000", "1000100", "1001000", "1110100"];
+const EAN_PARITY = ["LLLLLL", "LLGLGG", "LLGGLG", "LLGGGL", "LGLLGG", "LGGLLG", "LGGGLL", "LGLGLG", "LGLGGL", "LGGLGL"];
+
+// Draws the GTIN as an EAN-13 barcode (a UPC-A is the same bars with a
+// leading 0). Returns "" for codes that don't fit EAN-13, like case packs.
+function barcodeSvg(gtin) {
+  if (!gtin?.startsWith("0")) return "";
+  const e = gtin.slice(1);
+  let bits = "101";
+  for (let i = 1; i <= 6; i++) bits += (EAN_PARITY[e[0]][i - 1] === "L" ? EAN_L : EAN_G)[e[i]];
+  bits += "01010";
+  for (let i = 7; i <= 12; i++) bits += EAN_R[e[i]];
+  bits += "101";
+  const quiet = 11; // blank margin, in bar widths, that scanners need
+  let bars = "";
+  for (let i = 0; i < bits.length; ) {
+    if (bits[i] === "0") { i++; continue; }
+    let j = i;
+    while (bits[j] === "1") j++;
+    bars += `<rect x="${quiet + i}" width="${j - i}" height="40"/>`;
+    i = j;
+  }
+  return `<svg class="barcode-bars" viewBox="0 0 ${bits.length + quiet * 2} 40" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${bars}</g></svg>`;
+}
+
+function barcodeBlock(gtin) {
+  return `${barcodeSvg(gtin)}<span class="barcode-num">${esc(upcLabel(gtin))}</span>`;
 }
 
 // Enlarge to ~2000px, grayscale, and stretch the contrast. Small tag text in
@@ -941,9 +1055,12 @@ $("#report-form").addEventListener("submit", async (e) => {
 
   const name = $("#item-name").value.trim();
   const note = $("#item-note").value.trim();
+  const upcText = $("#item-upc").value.trim();
+  const upc = upcText ? toGtin14(upcText) : null;
   const loc = state.location;
   if (!loc) return (err.textContent = "Pick a location.");
-  if (!state.photoBlob && !name) return (err.textContent = "Add a photo of the tag or type the item name.");
+  if (!state.photoBlob && !name && !upc) return (err.textContent = "Add a photo of the tag or type the item name.");
+  if (upcText && !upc) return (err.textContent = "That UPC doesn't look right. Type the 13-digit number from the tag, or leave it blank.");
 
   const btn = $("#report-submit");
   btn.disabled = true;
@@ -964,6 +1081,8 @@ $("#report-form").addEventListener("submit", async (e) => {
       note: note || null,
       photo_path: photoPath,
       notify_found: $("#notify-found").checked,
+      // Only sent when filled, so reporting still works before the upc column is added.
+      ...(upc ? { upc } : {}),
     });
     if (error) {
       if (photoPath) sb.storage.from(BUCKET).remove([photoPath]);
@@ -971,6 +1090,7 @@ $("#report-form").addEventListener("submit", async (e) => {
     }
     // Keep the location selected: people usually report several items in one aisle.
     $("#item-name").value = "";
+    $("#item-upc").value = "";
     $("#item-note").value = "";
     setNewPhoto(null);
     toast("Sent to the list");
@@ -1063,6 +1183,7 @@ function itemCard(i, onHold) {
         ${onHold ? `<div class="hold-note">On hold${holder ? ` by ${esc(holder)}` : ""}${i.hold_note ? `: ${esc(i.hold_note)}` : ""}</div>` : ""}
       </div>
     </div>
+    ${i.upc ? `<button class="barcode" data-act="barcode" aria-label="Show barcode, UPC ${esc(upcLabel(i.upc))}">${barcodeBlock(i.upc)}</button>` : ""}
     <div class="item-actions">
       <button class="btn success" data-act="found">Found</button>
       <button class="btn danger" data-act="unavailable">Can't get</button>
@@ -1085,6 +1206,12 @@ $("#checklist").addEventListener("click", async (e) => {
     case "photo": {
       $("#photo-full").src = photoUrl(item.photo_path) || "";
       $("#dlg-photo").showModal();
+      break;
+    }
+    case "barcode": {
+      $("#barcode-item").textContent = item.name || "";
+      $("#barcode-full").innerHTML = barcodeBlock(item.upc);
+      $("#dlg-barcode").showModal();
       break;
     }
     case "found": {
@@ -1174,6 +1301,7 @@ for (const dlg of document.querySelectorAll("dialog")) {
   dlg.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => dlg.close("cancel")));
 }
 $("#photo-full").addEventListener("click", () => $("#dlg-photo").close());
+$("#barcode-full").addEventListener("click", () => $("#dlg-barcode").close());
 
 let selectedReason = null;
 $("#reason-chips").addEventListener("click", (e) => {
