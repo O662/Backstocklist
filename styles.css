@@ -64,6 +64,7 @@ svg { width: 24px; height: 24px; fill: currentColor; flex-shrink: 0; }
 .row > input { flex: 1; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .grow { flex: 1; }
+.ocr-status { margin: -8px 0 0; }
 
 /* ---------- Form controls ---------- */
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }

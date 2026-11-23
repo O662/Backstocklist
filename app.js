@@ -512,7 +512,11 @@ async function addLocation() {
   }
 }
 
-$("#photo-btn").addEventListener("click", () => $("#photo-input").click());
+$("#photo-btn").addEventListener("click", () => {
+  $("#photo-input").click();
+  // Start loading the tag reader while the camera is open.
+  getOcrWorker().catch(() => {});
+});
 
 $("#photo-input").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
@@ -533,6 +537,7 @@ function setNewPhoto(blob) {
   state.photoOriginal = blob;
   state.cropRect = null;
   setPhoto(blob);
+  readTag(blob);
 }
 
 function setPhoto(blob) {
@@ -671,6 +676,9 @@ $("#crop-done").addEventListener("click", async () => {
     setPhoto(isFull ? state.photoOriginal : await cropImage($("#crop-img"), r));
     state.cropRect = isFull ? null : { ...r };
     $("#dlg-crop").close();
+    // Cropping in on the name usually reads better, so try again (keeping
+    // the earlier name if this read finds nothing).
+    readTag(state.photoBlob, { keepOnFail: true });
   } catch {
     toast("Couldn't crop that photo. Try again.");
   } finally {
@@ -714,6 +722,212 @@ async function compressImage(file, maxSide = 1280, quality = 0.72) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+// ---------- Read the item name off the tag ----------
+// Runs on the phone with Tesseract.js, so the photo isn't sent anywhere extra.
+// It's loaded the first time someone taps "Take photo of tag" (about 6 MB,
+// then cached). It only fills "Item" while that box is empty or still holds
+// the name it filled in last time, so it never overwrites what someone typed.
+
+const OCR_SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+const OCR_IDLE_MS = 120_000; // free the reader's memory after 2 idle minutes
+const ocr = { worker: null, loading: null, run: 0, idle: null, autoName: "" };
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => {
+      s.remove();
+      reject(new Error(`Couldn't load ${src}`));
+    };
+    document.head.append(s);
+  });
+}
+
+function getOcrWorker() {
+  clearTimeout(ocr.idle);
+  if (ocr.worker) return Promise.resolve(ocr.worker);
+  ocr.loading ??= (async () => {
+    if (!window.Tesseract) await loadScript(OCR_SRC);
+    const worker = await window.Tesseract.createWorker("eng", 1); // 1 = LSTM engine
+    // "Sparse text": tags are scattered words, not paragraphs. This read far
+    // more tag names correctly than the default page layout.
+    await worker.setParameters({ tessedit_pageseg_mode: "11" });
+    ocr.worker = worker;
+    return worker;
+  })().finally(() => (ocr.loading = null));
+  return ocr.loading;
+}
+
+function scheduleOcrShutdown() {
+  clearTimeout(ocr.idle);
+  ocr.idle = setTimeout(() => {
+    const w = ocr.worker;
+    ocr.worker = null;
+    w?.terminate();
+  }, OCR_IDLE_MS);
+}
+
+function setOcrStatus(text) {
+  $("#ocr-status").textContent = text || "";
+  $("#ocr-status").hidden = !text;
+}
+
+// True while "Item" is empty or still holds what the reader put there.
+function itemNameIsAuto() {
+  const v = $("#item-name").value.trim();
+  return !v || v === ocr.autoName;
+}
+
+function setAutoName(name) {
+  $("#item-name").value = name;
+  ocr.autoName = name;
+}
+
+$("#item-name").addEventListener("input", () => {
+  if (!itemNameIsAuto()) setOcrStatus("");
+});
+
+async function readTag(blob, { keepOnFail = false } = {}) {
+  const run = ++ocr.run; // a newer photo or crop makes older reads stale
+  if (!itemNameIsAuto()) return setOcrStatus("");
+  if (!keepOnFail) setAutoName(""); // drop the name read from the previous photo
+  if (!blob) return setOcrStatus("");
+
+  setOcrStatus("Reading the tag…");
+  try {
+    const worker = await getOcrWorker();
+    if (run !== ocr.run) return;
+    const { data } = await worker.recognize(await prepForOcr(blob));
+    if (run !== ocr.run || !itemNameIsAuto()) return;
+    const name = pickTagName(data);
+    if (name) {
+      setAutoName(name);
+      setOcrStatus("Name read from the tag. Check it, or crop in on the name to read it again.");
+    } else {
+      setOcrStatus(
+        keepOnFail && ocr.autoName
+          ? "Couldn't read a better name there, so the earlier one was kept."
+          : "Couldn't read a name. Type it, or crop in on the name to try again.",
+      );
+    }
+  } catch (ex) {
+    console.warn("Tag reading failed", ex);
+    if (run === ocr.run) setOcrStatus("");
+  } finally {
+    if (run === ocr.run) scheduleOcrShutdown();
+  }
+}
+
+// Enlarge to ~2000px, grayscale, and stretch the contrast. Small tag text in
+// a 1280px photo reads much better this way.
+async function prepForOcr(blob, side = 2000) {
+  const img = await createImageBitmap(blob);
+  const scale = side / Math.max(img.width, img.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  img.close?.();
+
+  const pic = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const px = pic.data;
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < px.length; i += 4) {
+    const g = (px[i] * 77 + px[i + 1] * 150 + px[i + 2] * 29) >> 8;
+    px[i] = g;
+    hist[g]++;
+  }
+  // Map the darkest 1% to black and the brightest 1% to white.
+  const cut = (px.length / 4) * 0.01;
+  let lo = 0, hi = 255;
+  for (let n = 0; lo < 255 && (n += hist[lo]) < cut; lo++);
+  for (let n = 0; hi > 0 && (n += hist[hi]) < cut; hi--);
+  const range = Math.max(1, hi - lo);
+  for (let i = 0; i < px.length; i += 4) {
+    const v = Math.min(255, Math.max(0, ((px[i] - lo) * 255) / range));
+    px[i] = px[i + 1] = px[i + 2] = v;
+  }
+  ctx.putImageData(pic, 0, 0);
+  return canvas;
+}
+
+// Shelf tags mix the product name with prices, unit prices, UPCs, dates and
+// badges ("Kosher", "Low Sodium"). Keep words that read confidently and are
+// mostly letters, drop the usual tag labels, then group words that are the
+// same size and sit next to each other. The biggest, most confident group is
+// the name; its words are put back in reading order.
+const TAG_LABELS = new Set([
+  "per", "ounce", "ounces", "oz", "fl", "ct", "count", "lb", "lbs", "each", "ea",
+  "was", "now", "save", "sale", "price", "cut", "reg", "unit",
+  "kosher", "low", "sodium", "gluten", "vegetarian", "grams", "net", "carbs",
+]);
+
+function pickTagName(data) {
+  const words = [];
+  for (const w of data.words || []) {
+    if (w.confidence < 50) continue;
+    const text = w.text.replace(/^[^A-Za-z0-9&]+|[^A-Za-z0-9&%)]+$/g, "");
+    const letters = (text.match(/[A-Za-z]/g) || []).length;
+    if (!/[A-Za-z]{3,}/.test(text)) continue; // drops "oO", "no", prices, codes
+    if (letters / text.length < 0.75) continue; // drops "GC05", "3OZ"
+    if (/^[a-z]+[A-Z]/.test(text)) continue; // OCR noise like "oOo"
+    if (TAG_LABELS.has(text.toLowerCase())) continue;
+    const { x0, y0, x1, y1 } = w.bbox;
+    words.push({ text, letters, conf: w.confidence, x0, y0, x1, y1, h: y1 - y0 });
+  }
+  // "GLUTEN FREE" badge: drop a lone "Free" (but not "Sugar-Free").
+  if ((data.words || []).some((w) => /^gluten$/i.test(w.text))) {
+    for (let i = words.length - 1; i >= 0; i--) if (/^free$/i.test(words[i].text)) words.splice(i, 1);
+  }
+  if (!words.length) return "";
+
+  // Group neighbours of similar size (union-find).
+  const parent = words.map((_, i) => i);
+  const root = (i) => (parent[i] === i ? i : (parent[i] = root(parent[i])));
+  for (let i = 0; i < words.length; i++) {
+    for (let j = i + 1; j < words.length; j++) {
+      const a = words[i], b = words[j];
+      const h = Math.max(a.h, b.h);
+      if (Math.min(a.h, b.h) / h < 0.6) continue;
+      const dx = Math.max(0, Math.max(a.x0, b.x0) - Math.min(a.x1, b.x1));
+      const dy = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
+      if (dx <= h * 2 && dy <= h * 0.8) parent[root(i)] = root(j);
+    }
+  }
+  const groups = new Map();
+  words.forEach((w, i) => {
+    const r = root(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(w);
+  });
+
+  let best = null, bestScore = 0;
+  for (const g of groups.values()) {
+    const avgH = g.reduce((t, w) => t + w.h, 0) / g.length;
+    const score = g.reduce((t, w) => t + w.letters * (w.conf / 100), 0) * avgH;
+    if (score > bestScore) [best, bestScore] = [g, score];
+  }
+
+  // Reading order: rows top to bottom, then left to right.
+  const sorted = [...best].sort((a, b) => a.y0 + a.y1 - (b.y0 + b.y1));
+  const rows = [];
+  for (const w of sorted) {
+    const row = rows.at(-1);
+    const mid = (w.y0 + w.y1) / 2;
+    if (row && Math.abs(mid - row.mid) < row.h * 0.5) row.words.push(w);
+    else rows.push({ mid, h: w.h, words: [w] });
+  }
+  return rows
+    .flatMap((r) => r.words.sort((a, b) => a.x0 - b.x0))
+    .map((w) => w.text)
+    .join(" ")
+    .slice(0, 120);
 }
 
 $("#notify-found").addEventListener("change", (e) =>
