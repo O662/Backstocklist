@@ -20,8 +20,10 @@ const state = {
   items: [],
   updates: [],
   view: "report",
-  photoBlob: null,
+  photoBlob: null, // what gets uploaded (cropped if the user cropped)
   photoPreviewUrl: null,
+  photoOriginal: null, // uncropped photo, so re-cropping can widen back out
+  cropRect: null, // last crop as fractions of the original { x, y, w, h }
   location: null,
   customLocations: [], // added by the team, from the `locations` table
   locationsLoaded: false,
@@ -442,14 +444,21 @@ $("#photo-input").addEventListener("change", async (e) => {
   e.target.value = "";
   if (!file) return;
   try {
-    setPhoto(await compressImage(file));
+    setNewPhoto(await compressImage(file));
   } catch {
-    if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size < 3_000_000) setPhoto(file);
+    if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size < 3_000_000) setNewPhoto(file);
     else toast("Couldn't read that photo. Try again.");
   }
 });
 
-$("#photo-clear").addEventListener("click", () => setPhoto(null));
+$("#photo-clear").addEventListener("click", () => setNewPhoto(null));
+
+// A freshly taken photo (or none): forget any previous crop.
+function setNewPhoto(blob) {
+  state.photoOriginal = blob;
+  state.cropRect = null;
+  setPhoto(blob);
+}
 
 function setPhoto(blob) {
   if (state.photoPreviewUrl) URL.revokeObjectURL(state.photoPreviewUrl);
@@ -458,8 +467,155 @@ function setPhoto(blob) {
   $("#photo-preview").src = state.photoPreviewUrl || "";
   $("#photo-preview").hidden = !blob;
   $("#photo-placeholder").hidden = !!blob;
-  $("#photo-clear").hidden = !blob;
+  $("#photo-actions").hidden = !blob;
   $("#photo-btn").classList.toggle("has-photo", !!blob);
+}
+
+// ---------- Crop ----------
+// The crop box is stored as fractions of the image (0–1), so it survives
+// screen rotation and maps straight onto the full-size photo.
+
+const FULL_CROP = { x: 0, y: 0, w: 1, h: 1 };
+const CROP_MIN_PX = 48; // smallest crop box on screen
+const crop = { rect: { ...FULL_CROP }, drag: null, url: null };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+$("#photo-crop").addEventListener("click", openCrop);
+$("#crop-cancel").addEventListener("click", () => $("#dlg-crop").close());
+$("#crop-reset").addEventListener("click", () => {
+  crop.rect = { ...FULL_CROP };
+  drawCropBox();
+});
+
+$("#dlg-crop").addEventListener("close", () => {
+  crop.drag = null;
+  $("#crop-img").removeAttribute("src");
+  if (crop.url) URL.revokeObjectURL(crop.url);
+  crop.url = null;
+});
+
+window.addEventListener("resize", () => {
+  if ($("#dlg-crop").open) layoutCrop();
+});
+
+async function openCrop() {
+  if (!state.photoOriginal) return;
+  const img = $("#crop-img");
+  crop.url = URL.createObjectURL(state.photoOriginal);
+  img.src = crop.url;
+  try {
+    await img.decode();
+  } catch {
+    URL.revokeObjectURL(crop.url);
+    crop.url = null;
+    return toast("Couldn't open that photo. Try again.");
+  }
+  crop.rect = { ...(state.cropRect || FULL_CROP) };
+  $("#dlg-crop").showModal();
+  layoutCrop();
+}
+
+// Size the image to fit the stage with room around it for the handles.
+function layoutCrop() {
+  const img = $("#crop-img");
+  const stage = $("#crop-stage").getBoundingClientRect();
+  const pad = 28;
+  const scale = Math.min(
+    (stage.width - pad * 2) / img.naturalWidth,
+    (stage.height - pad * 2) / img.naturalHeight,
+  );
+  const wrap = $("#crop-wrap").style;
+  wrap.width = `${Math.max(1, img.naturalWidth * scale)}px`;
+  wrap.height = `${Math.max(1, img.naturalHeight * scale)}px`;
+  drawCropBox();
+}
+
+function drawCropBox() {
+  const { x, y, w, h } = crop.rect;
+  const s = $("#crop-box").style;
+  s.left = `${x * 100}%`;
+  s.top = `${y * 100}%`;
+  s.width = `${w * 100}%`;
+  s.height = `${h * 100}%`;
+}
+
+const cropBox = $("#crop-box");
+
+cropBox.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const wrap = $("#crop-wrap").getBoundingClientRect();
+  crop.drag = {
+    id: e.pointerId,
+    mode: e.target.dataset.h || "move",
+    x0: e.clientX,
+    y0: e.clientY,
+    start: { ...crop.rect },
+    W: wrap.width,
+    H: wrap.height,
+  };
+  cropBox.setPointerCapture(e.pointerId);
+});
+
+cropBox.addEventListener("pointermove", (e) => {
+  const d = crop.drag;
+  if (!d || e.pointerId !== d.id) return;
+  const dx = (e.clientX - d.x0) / d.W;
+  const dy = (e.clientY - d.y0) / d.H;
+  const minW = Math.min(1, CROP_MIN_PX / d.W);
+  const minH = Math.min(1, CROP_MIN_PX / d.H);
+  crop.rect = adjustCrop(d.start, d.mode, dx, dy, minW, minH);
+  drawCropBox();
+});
+
+const endCropDrag = (e) => {
+  if (crop.drag?.id === e.pointerId) crop.drag = null;
+};
+cropBox.addEventListener("pointerup", endCropDrag);
+cropBox.addEventListener("pointercancel", endCropDrag);
+
+// mode is "move" or a handle: n, e, s, w, ne, nw, se, sw.
+function adjustCrop(r, mode, dx, dy, minW, minH) {
+  if (mode === "move") {
+    return { ...r, x: clamp(r.x + dx, 0, 1 - r.w), y: clamp(r.y + dy, 0, 1 - r.h) };
+  }
+  let left = r.x, top = r.y, right = r.x + r.w, bottom = r.y + r.h;
+  if (mode.includes("w")) left = clamp(left + dx, 0, right - minW);
+  if (mode.includes("e")) right = clamp(right + dx, left + minW, 1);
+  if (mode.includes("n")) top = clamp(top + dy, 0, bottom - minH);
+  if (mode.includes("s")) bottom = clamp(bottom + dy, top + minH, 1);
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+$("#crop-done").addEventListener("click", async () => {
+  const r = crop.rect;
+  const isFull = r.x < 0.002 && r.y < 0.002 && r.w > 0.996 && r.h > 0.996;
+  const btn = $("#crop-done");
+  btn.disabled = true;
+  try {
+    // Uncropped: reuse the original so it isn't re-compressed.
+    setPhoto(isFull ? state.photoOriginal : await cropImage($("#crop-img"), r));
+    state.cropRect = isFull ? null : { ...r };
+    $("#dlg-crop").close();
+  } catch {
+    toast("Couldn't crop that photo. Try again.");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function cropImage(img, r, maxSide = 1280, quality = 0.85) {
+  const sx = Math.round(r.x * img.naturalWidth);
+  const sy = Math.round(r.y * img.naturalHeight);
+  const sw = Math.max(1, Math.round(r.w * img.naturalWidth));
+  const sh = Math.max(1, Math.round(r.h * img.naturalHeight));
+  const scale = Math.min(1, maxSide / Math.max(sw, sh));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+  if (!blob) throw new Error("encode failed");
+  return blob;
 }
 
 // Shrink phone photos (often 3–8 MB) to ~150 KB so uploads are fast and storage lasts.
@@ -527,7 +683,7 @@ $("#report-form").addEventListener("submit", async (e) => {
     // Keep the location selected: people usually report several items in one aisle.
     $("#item-name").value = "";
     $("#item-note").value = "";
-    setPhoto(null);
+    setNewPhoto(null);
     toast("Sent to the list");
     loadItems();
   } catch (ex) {

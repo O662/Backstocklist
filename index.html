@@ -62,7 +62,13 @@
               <strong>Take photo of tag</strong>
             </span>
           </button>
-          <button type="button" id="photo-clear" class="link-btn" hidden>Remove photo</button>
+          <div id="photo-actions" class="row-between" hidden>
+            <button type="button" id="photo-crop" class="btn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 15h2V7a2 2 0 0 0-2-2H9v2h8v8ZM7 17V1H5v4H1v2h4v10a2 2 0 0 0 2 2h10v4h2v-4h4v-2H7Z"/></svg>
+              Crop
+            </button>
+            <button type="button" id="photo-clear" class="link-btn">Remove photo</button>
+          </div>
 
           <label><span>Item <span class="muted">(optional)</span></span>
             <input id="item-name" maxlength="120" placeholder="e.g. Tide Pods 42ct" autocomplete="off">
@@ -217,6 +223,23 @@
   <dialog id="dlg-photo" class="photo-viewer">
     <form method="dialog"><button class="photo-close" aria-label="Close">×</button></form>
     <img id="photo-full" alt="Tag photo">
+  </dialog>
+
+  <dialog id="dlg-crop" class="cropper" aria-label="Crop photo">
+    <div id="crop-stage" class="crop-stage">
+      <div id="crop-wrap" class="crop-wrap">
+        <img id="crop-img" alt="Photo to crop" draggable="false">
+        <div id="crop-box" class="crop-box">
+          <span data-h="n"></span><span data-h="e"></span><span data-h="s"></span><span data-h="w"></span>
+          <span data-h="nw"></span><span data-h="ne"></span><span data-h="se"></span><span data-h="sw"></span>
+        </div>
+      </div>
+    </div>
+    <div class="crop-bar">
+      <button type="button" class="btn" id="crop-cancel">Cancel</button>
+      <button type="button" class="btn" id="crop-reset">Reset</button>
+      <button type="button" class="btn primary grow" id="crop-done">Done</button>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
