@@ -60,6 +60,81 @@ function toast(msg, ms = 2800) {
   toastTimer = setTimeout(() => (el.hidden = true), ms);
 }
 
+// Banner at the top for incoming updates. Green = found, yellow = on hold,
+// red = can't get. Tap opens Updates; swipe up or tap X to dismiss.
+const BANNER_MS = 6000;
+let bannerTimer;
+
+function showBanner(n) {
+  const el = $("#banner");
+  $("#banner-title").textContent = n.title;
+  $("#banner-text").textContent = n.body || "";
+  el.className = `banner ${n.outcome} out`;
+  el.style.transform = "";
+  el.hidden = false;
+  el.offsetHeight; // start from the "out" position so it slides in
+  el.classList.remove("out");
+  armBannerTimer();
+}
+
+function armBannerTimer() {
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(hideBanner, BANNER_MS);
+}
+
+function hideBanner() {
+  const el = $("#banner");
+  clearTimeout(bannerTimer);
+  if (el.hidden) return;
+  el.style.transform = "";
+  el.classList.add("out");
+  setTimeout(() => {
+    if (el.classList.contains("out")) el.hidden = true;
+  }, 250);
+}
+
+{
+  const el = $("#banner");
+  let startY = null;
+  let dy = 0;
+  let dragged = false;
+
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("#banner-close")) return;
+    startY = e.clientY;
+    dy = 0;
+    dragged = false;
+    clearTimeout(bannerTimer);
+    el.classList.add("dragging");
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (startY === null) return;
+    dy = Math.min(0, e.clientY - startY); // only follows the finger upward
+    if (Math.abs(e.clientY - startY) > 8) dragged = true;
+    el.style.transform = `translateY(${dy}px)`;
+  });
+  const end = () => {
+    if (startY === null) return;
+    startY = null;
+    el.classList.remove("dragging");
+    if (dy < -30) hideBanner();
+    else {
+      el.style.transform = "";
+      armBannerTimer();
+    }
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+
+  $("#banner-open").addEventListener("click", () => {
+    if (dragged) return;
+    hideBanner();
+    if (state.started) go("updates");
+  });
+  $("#banner-close").addEventListener("click", hideBanner);
+}
+
 function showScreen(name) {
   $("#screen-join").hidden = name !== "join";
   $("#app").hidden = name !== "app";
@@ -264,7 +339,7 @@ function subscribeLive() {
         const n = payload.new;
         if (!state.updates.some((u) => u.id === n.id)) state.updates.unshift(n);
         renderUpdates();
-        toast(n.title, 5000);
+        showBanner(n);
       },
     )
     .subscribe((status) => {

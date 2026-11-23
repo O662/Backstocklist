@@ -367,3 +367,30 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
   border-radius: 12px; padding: 12px 16px;
   font-weight: 600; box-shadow: 0 6px 24px rgba(0, 0, 0, .25);
 }
+
+/* ---------- Update banner (top of screen) ---------- */
+.banner {
+  --banner-bg: #15803d; --banner-fg: #ffffff;
+  position: fixed; left: 12px; right: 12px; z-index: 60;
+  top: calc(8px + env(safe-area-inset-top));
+  max-width: 480px; margin: 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  background: var(--banner-bg); color: var(--banner-fg);
+  border-radius: 14px; padding: 4px 4px 4px 0;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .3);
+  touch-action: none; user-select: none; -webkit-user-select: none;
+  transition: transform .22s ease, opacity .22s ease;
+}
+.banner.hold        { --banner-bg: #facc15; --banner-fg: #1c1917; }
+.banner.unavailable { --banner-bg: #b91c1c; --banner-fg: #ffffff; }
+.banner.out { transform: translateY(calc(-100% - 24px)); opacity: 0; }
+.banner.dragging { transition: none; }
+.banner-body {
+  flex: 1; min-width: 0; text-align: left;
+  background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+  padding: 10px 4px 10px 16px;
+}
+.banner-title { display: block; font-weight: 700; overflow-wrap: anywhere; }
+.banner-text { display: block; font-size: .92rem; overflow-wrap: anywhere; }
+.banner-close { color: inherit; }
+.banner-close:active { background: rgba(0, 0, 0, .15); }

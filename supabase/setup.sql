@@ -39,6 +39,10 @@ create table if not exists public.notifications (
   created_at timestamptz not null default now()
 );
 create index if not exists notifications_user_idx on public.notifications (user_id, created_at desc);
+-- 'hold' was added later; refresh the allowed outcomes on existing databases.
+alter table public.notifications drop constraint if exists notifications_outcome_check;
+alter table public.notifications add constraint notifications_outcome_check
+  check (outcome in ('found', 'unavailable', 'hold'));
 
 -- Team-wide settings (a single row). Admins change these from the app.
 --   join_code: store code required to join (null = anyone with the link can join)
@@ -393,6 +397,36 @@ begin
   return jsonb_build_object('closed', true, 'photo_path', it.photo_path);
 end;
 $$;
+
+-- Tell the reporter when someone else puts their item on hold.
+create or replace function public.notify_item_hold()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  holder    text;
+  item_name text;
+begin
+  if new.status = 'hold' and old.status <> 'hold' and new.reported_by <> auth.uid() then
+    select display_name into holder from public.profiles where id = auth.uid();
+    holder    := coalesce(holder, 'A teammate');
+    item_name := coalesce(nullif(trim(new.name), ''), 'Item in ' || new.location);
+    insert into public.notifications (user_id, outcome, title, body)
+    values (new.reported_by, 'hold',
+            'On hold: ' || item_name,
+            holder || ': ' || coalesce(nullif(trim(new.hold_note), ''), 'No reason given') || ' (' || new.location || ')');
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.notify_item_hold() from public, anon, authenticated;
+
+drop trigger if exists items_notify_hold on public.items;
+create trigger items_notify_hold
+  after update of status on public.items
+  for each row execute function public.notify_item_hold();
 
 -- Save this phone's push subscription for the signed-in user.
 create or replace function public.save_push_subscription(p_endpoint text, p_p256dh text, p_auth text)
