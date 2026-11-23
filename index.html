@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Backstock List</title>
+  <meta name="description" content="Report items that need pulling from backstock and work the list together.">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Backstock">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <!-- ============ Join ============ -->
+  <section id="screen-join" class="screen centered" hidden>
+    <div class="card narrow">
+      <img src="icons/icon-192.png" alt="" class="logo">
+      <h1>Backstock List</h1>
+      <p class="muted">Enter your name so teammates know who reported what, and so you get notified about your items.</p>
+      <form id="join-form" class="stack">
+        <label><span>Your name</span>
+          <input id="join-name" maxlength="40" placeholder="First name" autocomplete="given-name" required>
+        </label>
+        <label id="join-code-wrap" hidden><span>Store code</span>
+          <input id="join-code" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+        </label>
+        <button class="btn primary big" type="submit">Join</button>
+        <p id="join-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ Main app ============ -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <h1 id="view-title">Checklist</h1>
+      <div class="topbar-actions">
+        <span id="conn-dot" class="conn-dot" title="Live updates"></span>
+        <button id="btn-updates" class="icon-btn" aria-label="Updates">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z"/></svg>
+          <span id="updates-badge" class="badge" hidden>0</span>
+        </button>
+        <button id="btn-settings" class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.47.47 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Report -->
+      <section id="view-report" class="view" hidden>
+        <form id="report-form" class="stack">
+          <input id="photo-input" type="file" accept="image/*" capture="environment" hidden>
+          <button type="button" id="photo-btn" class="photo-drop">
+            <img id="photo-preview" alt="Tag photo" hidden>
+            <span id="photo-placeholder">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9Zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg>
+              <strong>Take photo of tag</strong>
+            </span>
+          </button>
+          <button type="button" id="photo-clear" class="link-btn" hidden>Remove photo</button>
+
+          <label><span>Item <span class="muted">(optional)</span></span>
+            <input id="item-name" maxlength="120" placeholder="e.g. Tide Pods 42ct" autocomplete="off">
+          </label>
+
+          <fieldset>
+            <legend>Location</legend>
+            <div id="location-chips" class="chips"></div>
+            <input id="location-other" maxlength="60" placeholder="Other location" hidden>
+          </fieldset>
+
+          <label><span>Note <span class="muted">(optional)</span></span>
+            <input id="item-note" maxlength="300" placeholder="e.g. need 2 cases" autocomplete="off">
+          </label>
+
+          <label class="toggle">
+            <input id="notify-found" type="checkbox">
+            <span>Notify me when it's found</span>
+          </label>
+          <p class="muted small">You'll always be notified if it can't be pulled, with the reason.</p>
+
+          <button id="report-submit" class="btn primary big" type="submit">Send to list</button>
+          <p id="report-error" class="error" role="alert"></p>
+        </form>
+      </section>
+
+      <!-- Checklist -->
+      <section id="view-checklist" class="view" hidden>
+        <div class="filter-row">
+          <select id="filter-location" aria-label="Filter by location">
+            <option value="">All locations</option>
+          </select>
+          <button id="btn-refresh" class="icon-btn" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z"/></svg>
+          </button>
+        </div>
+        <div id="checklist"></div>
+      </section>
+
+      <!-- Updates (notifications for things I reported) -->
+      <section id="view-updates" class="view" hidden>
+        <div class="row-between">
+          <p class="muted small">Results for items you reported.</p>
+          <button id="btn-clear-updates" class="link-btn">Clear all</button>
+        </div>
+        <div id="updates-list"></div>
+      </section>
+
+      <!-- Settings -->
+      <section id="view-settings" class="view" hidden>
+        <div class="card stack">
+          <h2>Notifications</h2>
+          <p id="push-status" class="muted"></p>
+          <div id="ios-install-hint" class="hint" hidden>
+            <strong>On iPhone:</strong> tap the Share button
+            <svg class="inline-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 7.5 6.5l1.42 1.42L11 5.83V15h2V5.83l2.08 2.09L16.5 6.5 12 2ZM5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10h-2v10H7V10H5Z"/></svg>
+            → <em>Add to Home Screen</em>, then open Backstock from your home screen and turn notifications on there.
+          </div>
+          <button id="btn-push" class="btn primary">Turn on notifications</button>
+          <button id="btn-push-test" class="link-btn" hidden>Send me a test notification</button>
+        </div>
+        <div class="card stack">
+          <h2>Your name</h2>
+          <form id="rename-form" class="row">
+            <input id="rename-input" maxlength="40" required>
+            <button class="btn" type="submit">Save</button>
+          </form>
+        </div>
+        <div class="card stack">
+          <h2>Admin</h2>
+          <div id="admin-locked" class="stack">
+            <p class="muted small">For leads: turn the store code on or off.</p>
+            <form id="admin-unlock-form" class="row">
+              <input id="admin-password" type="password" autocomplete="current-password" placeholder="Admin password" required>
+              <button class="btn" type="submit">Unlock</button>
+            </form>
+          </div>
+          <div id="admin-panel" class="stack" hidden>
+            <div>
+              <strong>Store code</strong>
+              <p id="code-status" class="muted small"></p>
+            </div>
+            <form id="code-form" class="row">
+              <input id="code-input" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="New store code" minlength="3" maxlength="40" required>
+              <button class="btn primary" type="submit">Save</button>
+            </form>
+            <button id="btn-code-off" class="btn" hidden>Turn off store code</button>
+            <hr>
+            <strong>Admin password</strong>
+            <form id="admin-pass-form" class="row">
+              <input id="admin-new-pass" type="password" autocomplete="new-password" placeholder="New admin password" minlength="8" required>
+              <button class="btn" type="submit">Change</button>
+            </form>
+            <hr>
+            <strong>People</strong>
+            <p class="muted small">Removing someone also deletes their open requests. Turn on the store code first, or they can just join again.</p>
+            <div id="member-list"></div>
+            <hr>
+            <button id="btn-reset-admins" class="link-btn">Remove admin from everyone but me</button>
+            <button id="btn-lock-admin" class="link-btn">Lock admin on this phone</button>
+          </div>
+        </div>
+        <div class="card stack">
+          <p class="muted small">You're on this phone as <strong id="signed-in-as"></strong>.</p>
+          <button id="btn-signout" class="btn danger">Leave on this phone</button>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tabbar">
+      <button data-view="report" class="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2Z"/></svg>
+        <span>Report</span>
+      </button>
+      <button data-view="checklist" class="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h2v2H3V5Zm4 0h14v2H7V5ZM3 11h2v2H3v-2Zm4 0h14v2H7v-2Zm-4 6h2v2H3v-2Zm4 0h14v2H7v-2Z"/></svg>
+        <span>Checklist</span>
+        <span id="checklist-badge" class="badge" hidden>0</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- ============ Dialogs ============ -->
+  <dialog id="dlg-reason" class="sheet">
+    <form method="dialog" class="stack" id="reason-form">
+      <h2>Why can't you get it?</h2>
+      <p id="reason-item" class="muted"></p>
+      <div id="reason-chips" class="chips"></div>
+      <input id="reason-custom" maxlength="200" placeholder="Or type a reason">
+      <div class="row">
+        <button class="btn" type="button" data-close>Back</button>
+        <button class="btn danger grow" value="ok" id="reason-ok">Send</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-hold" class="sheet">
+    <form method="dialog" class="stack">
+      <h2>Put on hold</h2>
+      <p class="muted">Keeps it on the list for later.</p>
+      <input id="hold-note" maxlength="200" placeholder="Why? e.g. need a ladder (optional)">
+      <div class="row">
+        <button class="btn" type="button" data-close>Back</button>
+        <button class="btn warn grow" value="ok">Hold</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-photo" class="photo-viewer">
+    <form method="dialog"><button class="photo-close" aria-label="Close">×</button></form>
+    <img id="photo-full" alt="Tag photo">
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
