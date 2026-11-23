@@ -23,6 +23,8 @@ const state = {
   photoBlob: null,
   photoPreviewUrl: null,
   location: null,
+  customLocations: [], // added by the team, from the `locations` table
+  locationsLoaded: false,
   signed: new Map(), // photo path -> { url, exp }
   channel: null,
   timer: null,
@@ -273,7 +275,7 @@ async function refreshAll() {
   const { data: me, error } = await sb.from("profiles").select("id, display_name, is_admin").eq("id", state.user.id).maybeSingle();
   if (!error && !me) return removedFromTeam();
   if (me) Object.assign(state.profile, me);
-  await Promise.all([loadItems(), loadUpdates()]);
+  await Promise.all([loadLocations(), loadItems(), loadUpdates()]);
 }
 
 async function removedFromTeam() {
@@ -324,25 +326,113 @@ const photoUrl = (path) => (path ? state.signed.get(path)?.url : null);
 // Report
 // ---------------------------------------------------------------------------
 
-function buildLocationControls() {
-  const chips = $("#location-chips");
-  chips.innerHTML = [...CONFIG.LOCATIONS, "Other…"]
-    .map((l) => `<button type="button" class="chip" aria-pressed="false" data-loc="${esc(l)}">${esc(l)}</button>`)
-    .join("");
-  chips.addEventListener("click", (e) => {
-    const chip = e.target.closest(".chip");
-    if (!chip) return;
-    chips.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c === chip)));
-    const other = chip.dataset.loc === "Other…";
-    $("#location-other").hidden = !other;
-    state.location = other ? null : chip.dataset.loc;
-    if (other) $("#location-other").focus();
-  });
+// Locations = the ones in config.js, then any the team added (shared through
+// the `locations` table), in the order they were added.
+const ADD_LOCATION = "__add__";
+const sameName = (a, b) => a.localeCompare(b, undefined, { sensitivity: "accent" }) === 0;
 
-  $("#filter-location").innerHTML =
-    `<option value="">All locations</option>` +
-    CONFIG.LOCATIONS.map((l) => `<option>${esc(l)}</option>`).join("");
-  $("#filter-location").value = localStorage.getItem("filterLocation") || "";
+function allLocations() {
+  const list = [...CONFIG.LOCATIONS];
+  for (const l of state.customLocations) if (!list.some((x) => sameName(x, l))) list.push(l);
+  return list;
+}
+
+async function loadLocations() {
+  const { data, error } = await sb.from("locations").select("name").order("created_at", { ascending: true });
+  // On error (e.g. setup.sql not re-run yet) just use the config.js list.
+  if (!error) state.customLocations = data.map((r) => r.name);
+  state.locationsLoaded = true;
+  renderLocationOptions();
+  if (state.items.length) renderChecklist(); // group order may have changed
+}
+
+function renderLocationOptions() {
+  const locs = allLocations();
+  const opts = locs.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+
+  // Keep this phone's last location (it may be a team-added one that hasn't loaded yet).
+  let saved = "";
+  if (state.location && !locs.includes(state.location)) {
+    if (state.locationsLoaded) state.location = null;
+    else saved = `<option value="${esc(state.location)}">${esc(state.location)}</option>`;
+  }
+  const sel = $("#location-select");
+  sel.innerHTML =
+    `<option value="" disabled>Pick a location</option>` +
+    opts +
+    saved +
+    `<option value="${ADD_LOCATION}">+ Add location…</option>`;
+  sel.value = state.location || "";
+
+  const filter = $("#filter-location");
+  const current = filter.value || localStorage.getItem("filterLocation") || "";
+  filter.innerHTML = `<option value="">All locations</option>` + opts;
+  filter.value = locs.includes(current) ? current : "";
+}
+
+function buildLocationControls() {
+  const saved = localStorage.getItem("reportLocation");
+  if (saved) state.location = saved;
+  renderLocationOptions();
+
+  $("#location-select").addEventListener("change", (e) => {
+    if (e.target.value === ADD_LOCATION) {
+      e.target.value = state.location || "";
+      showAddLocation(true);
+      return;
+    }
+    state.location = e.target.value || null;
+    localStorage.setItem("reportLocation", state.location || "");
+    showAddLocation(false);
+  });
+  $("#location-add-btn").addEventListener("click", addLocation);
+  $("#location-add-cancel").addEventListener("click", () => showAddLocation(false));
+  $("#location-new").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault(); // don't submit the report
+      addLocation();
+    }
+  });
+}
+
+function showAddLocation(show) {
+  $("#location-add").hidden = !show;
+  $("#location-new").value = "";
+  if (show) $("#location-new").focus();
+}
+
+function selectLocation(loc) {
+  state.location = loc;
+  localStorage.setItem("reportLocation", loc);
+  renderLocationOptions();
+  showAddLocation(false);
+}
+
+async function addLocation() {
+  const err = $("#report-error");
+  err.textContent = "";
+  const name = $("#location-new").value.trim().replace(/\s+/g, " ");
+  if (!name) return $("#location-new").focus();
+
+  const existing = allLocations().find((l) => sameName(l, name));
+  if (existing) return selectLocation(existing);
+
+  const btn = $("#location-add-btn");
+  btn.disabled = true;
+  try {
+    const { error } = await sb.from("locations").insert({ name });
+    // 23505 = someone else just added the same name: fine, use theirs.
+    if (error && error.code !== "23505") throw error;
+    await loadLocations();
+    selectLocation(allLocations().find((l) => sameName(l, name)) || name);
+    toast(`Added ${name}`);
+  } catch (ex) {
+    err.textContent = /locations/.test(ex?.message || "")
+      ? "Couldn't save the location. The database needs the latest setup.sql."
+      : friendlyError(ex);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 $("#photo-btn").addEventListener("click", () => $("#photo-input").click());
@@ -406,7 +496,7 @@ $("#report-form").addEventListener("submit", async (e) => {
 
   const name = $("#item-name").value.trim();
   const note = $("#item-note").value.trim();
-  const loc = state.location || $("#location-other").value.trim();
+  const loc = state.location;
   if (!loc) return (err.textContent = "Pick a location.");
   if (!state.photoBlob && !name) return (err.textContent = "Add a photo of the tag or type the item name.");
 
@@ -462,8 +552,9 @@ $("#btn-refresh").addEventListener("click", async () => {
 });
 
 function locationOrder(loc) {
-  const i = CONFIG.LOCATIONS.indexOf(loc);
-  return i === -1 ? CONFIG.LOCATIONS.length : i;
+  const locs = allLocations();
+  const i = locs.indexOf(loc);
+  return i === -1 ? locs.length : i;
 }
 
 function renderChecklist() {

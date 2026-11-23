@@ -12,6 +12,8 @@ export const CONFIG = {
   VAPID_PUBLIC_KEY: "BJWQNNXcJbtQv1PrkMHrJa2EousE9_hsfVLpf5m_4LtDAgfKg4Htk7_PFPMszsplqrDClzAyL_pqdes3zlMwX4M",
 
   // Shown in this order in Report and Checklist. Edit freely.
+  // Locations added in the app (Report → "+ Add location…") are shared with
+  // the team and listed after these.
   LOCATIONS: [
     "Aisle 6", "Aisle 6 Endcap",
     "Aisle 7", "Aisle 7 Endcap",

@@ -68,11 +68,14 @@
             <input id="item-name" maxlength="120" placeholder="e.g. Tide Pods 42ct" autocomplete="off">
           </label>
 
-          <fieldset>
-            <legend>Location</legend>
-            <div id="location-chips" class="chips"></div>
-            <input id="location-other" maxlength="60" placeholder="Other location" hidden>
-          </fieldset>
+          <label><span>Location</span>
+            <select id="location-select"></select>
+          </label>
+          <div id="location-add" class="row" hidden>
+            <input id="location-new" maxlength="60" placeholder="New location, e.g. Aisle 12" aria-label="New location name" autocomplete="off">
+            <button type="button" id="location-add-btn" class="btn primary">Add</button>
+            <button type="button" id="location-add-cancel" class="btn">Cancel</button>
+          </div>
 
           <label><span>Note <span class="muted">(optional)</span></span>
             <input id="item-note" maxlength="300" placeholder="e.g. need 2 cases" autocomplete="off">

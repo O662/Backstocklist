@@ -68,6 +68,15 @@ create table if not exists public.push_subscriptions (
   created_at timestamptz not null default now()
 );
 
+-- Locations the team added from the Report screen (shown after the ones in config.js).
+create table if not exists public.locations (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null check (char_length(name) between 1 and 60),
+  created_by uuid default auth.uid() references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists locations_name_idx on public.locations (lower(name));
+
 -- ---------- Row Level Security -----------------------------------------
 -- People sign in anonymously (just their name). You're a team member once
 -- you've joined with join_team() below, which creates your profile.
@@ -89,6 +98,14 @@ alter table public.items              enable row level security;
 alter table public.notifications      enable row level security;
 alter table public.push_subscriptions enable row level security;
 alter table public.team_settings      enable row level security; -- no policies: never readable from the app
+alter table public.locations          enable row level security;
+
+drop policy if exists "team reads locations" on public.locations;
+create policy "team reads locations" on public.locations
+  for select to authenticated using (public.is_member());
+drop policy if exists "team adds locations" on public.locations;
+create policy "team adds locations" on public.locations
+  for insert to authenticated with check (public.is_member() and created_by = auth.uid());
 
 drop policy if exists "team reads profiles" on public.profiles;
 create policy "team reads profiles" on public.profiles
@@ -133,6 +150,8 @@ grant update (display_name) on public.profiles to authenticated; -- people can't
 grant select, insert, update on public.items to authenticated;
 grant select, delete on public.notifications to authenticated;
 grant select, delete on public.push_subscriptions to authenticated;
+revoke all on public.locations from anon;
+grant select, insert (name) on public.locations to authenticated;
 
 -- ---------- Functions --------------------------------------------------
 

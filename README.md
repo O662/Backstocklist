@@ -2,7 +2,7 @@
 
 A shared backstock to-do list for phones. Snap a photo of the shelf tag, pick the aisle, and send it. Teammates see it within seconds, then mark it **Found**, **Can't get** (with a reason), or **Hold**. Closed items and their photos are deleted automatically, and the person who reported the item is notified.
 
-- **Report:** camera, location, optional name and note, plus an optional "notify me when found" toggle
+- **Report:** camera, location dropdown (anyone can add a new location for the whole team), optional name and note, plus an optional "notify me when found" toggle
 - **Checklist:** grouped by aisle and endcap, with a location filter and an "On hold" section
 - **Updates:** results for items you reported, as push notifications and an in-app list
 - Works in iPhone Safari and Android Chrome. Free to run: Supabase free tier plus GitHub Pages.
