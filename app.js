@@ -18,7 +18,7 @@ const state = {
   profile: null,
   profiles: new Map(), // id -> display_name
   items: [],
-  reviewed: [], // found / can't get in the last day
+  reviewed: [], // found / can't get in the last 12 hours
   reviewedError: null,
   updates: [],
   view: "report",
@@ -29,11 +29,13 @@ const state = {
   location: null,
   customLocations: [], // added by the team, from the `locations` table
   locationsLoaded: false,
-  signed: new Map(), // photo path -> { url, exp }
+  signed: new Map(), // photo path -> { url, exp } (url null = file doesn't exist)
   channel: null,
   timer: null,
   started: false,
 };
+
+loadSignedCache();
 
 const VIEWS = {
   report: "Report item",
@@ -243,6 +245,7 @@ async function onSignedOut() {
   clearInterval(state.timer);
   Object.assign(state, { user: null, profile: null, items: [], updates: [], channel: null, started: false });
   state.signed.clear();
+  saveSignedCache();
   showJoin();
 }
 
@@ -400,7 +403,7 @@ let loadingReviewed = null;
 async function loadReviewed() {
   if (loadingReviewed) return loadingReviewed;
   loadingReviewed = (async () => {
-    const since = new Date(Date.now() - 24 * 3600_000).toISOString();
+    const since = new Date(Date.now() - 12 * 3600_000).toISOString();
     const { data, error } = await sb
       .from("reviewed")
       .select("*")
@@ -417,17 +420,84 @@ async function loadReviewed() {
   return loadingReviewed;
 }
 
-async function signPhotos(paths) {
+// ---------- Photos & thumbnails ----------
+// Each photo is stored twice: the full photo (~150 KB, only loaded when someone
+// taps to enlarge it) and a small thumbnail (~20 KB) for the lists, saved
+// next to it as <name>_thumb.jpg. Older photos without a thumbnail fall back
+// to the full photo. Viewing links are kept for 6 hours and remembered across
+// app restarts, so phones re-use downloaded images instead of fetching again.
+// Together this keeps downloads far under Supabase's free monthly limit.
+
+const SIGN_SECS = 6 * 3600;
+const thumbOf = (path) => path.replace(/\.[^./]+$/, "") + "_thumb.jpg";
+
+function loadSignedCache() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("signedUrls") || "{}");
+    const soon = Date.now() + 5 * 60_000;
+    for (const [path, v] of Object.entries(saved)) if (v?.url && v.exp > soon) state.signed.set(path, v);
+  } catch { /* ignore */ }
+}
+
+function saveSignedCache() {
+  try {
+    const now = Date.now();
+    const keep = {};
+    for (const [path, v] of state.signed) if (v.url && v.exp > now) keep[path] = v;
+    localStorage.setItem("signedUrls", JSON.stringify(keep));
+  } catch { /* ignore */ }
+}
+
+async function signPaths(paths) {
   const soon = Date.now() + 5 * 60_000;
-  const need = paths.filter((p) => !(state.signed.get(p)?.exp > soon));
+  const need = [...new Set(paths)].filter((p) => !(state.signed.get(p)?.exp > soon));
   if (!need.length) return;
-  const { data } = await sb.storage.from(BUCKET).createSignedUrls(need, 3600);
-  for (const d of data ?? []) {
-    if (d.signedUrl) state.signed.set(d.path, { url: d.signedUrl, exp: Date.now() + 3600_000 });
-  }
+  const { data } = await sb.storage.from(BUCKET).createSignedUrls(need, SIGN_SECS);
+  const exp = Date.now() + SIGN_SECS * 1000;
+  // A missing file (an older photo with no thumbnail) is remembered as null.
+  for (const d of data ?? []) state.signed.set(d.path, { url: d.signedUrl || null, exp });
+  saveSignedCache();
+}
+
+// For lists: the thumbnail, or the full photo if there's no thumbnail.
+async function signPhotos(paths) {
+  await signPaths(paths.map(thumbOf));
+  const noThumb = paths.filter((p) => !state.signed.get(thumbOf(p))?.url);
+  if (noThumb.length) await signPaths(noThumb);
 }
 
 const photoUrl = (path) => (path ? state.signed.get(path)?.url : null);
+const thumbUrl = (path) => (path ? state.signed.get(thumbOf(path))?.url || photoUrl(path) : null);
+
+// Enlarge: show the thumbnail right away, then swap in the full photo.
+async function showPhoto(path) {
+  const img = $("#photo-full");
+  img.src = thumbUrl(path) || "";
+  $("#dlg-photo").showModal();
+  await signPaths([path]);
+  const full = photoUrl(path);
+  if (full && $("#dlg-photo").open) img.src = full;
+}
+
+// Upload a photo plus its thumbnail. Returns the photo's path.
+async function uploadPhoto(blob) {
+  const ext = blob.type === "image/png" ? "png" : blob.type === "image/webp" ? "webp" : "jpg";
+  const path = `${state.user.id}/${crypto.randomUUID()}.${ext}`;
+  const opts = { cacheControl: String(SIGN_SECS) };
+  let thumb = null;
+  try {
+    thumb = await compressImage(blob, 320, 0.6);
+  } catch { /* the full photo is used in lists instead */ }
+  const [full, small] = await Promise.all([
+    sb.storage.from(BUCKET).upload(path, blob, { ...opts, contentType: blob.type || "image/jpeg" }),
+    thumb ? sb.storage.from(BUCKET).upload(thumbOf(path), thumb, { ...opts, contentType: "image/jpeg" }) : null,
+  ]);
+  if (full.error) {
+    if (thumb && !small?.error) sb.storage.from(BUCKET).remove([thumbOf(path)]);
+    throw full.error;
+  }
+  return path;
+}
 
 // ---------------------------------------------------------------------------
 // Report
@@ -1097,14 +1167,7 @@ $("#report-form").addEventListener("submit", async (e) => {
   btn.textContent = "Sending…";
   let photoPath = null;
   try {
-    if (state.photoBlob) {
-      const ext = state.photoBlob.type === "image/png" ? "png" : state.photoBlob.type === "image/webp" ? "webp" : "jpg";
-      photoPath = `${state.user.id}/${crypto.randomUUID()}.${ext}`;
-      const { error } = await sb.storage
-        .from(BUCKET)
-        .upload(photoPath, state.photoBlob, { contentType: state.photoBlob.type || "image/jpeg" });
-      if (error) throw error;
-    }
+    if (state.photoBlob) photoPath = await uploadPhoto(state.photoBlob);
     const { error } = await sb.from("items").insert({
       name: name || null,
       location: loc,
@@ -1115,7 +1178,7 @@ $("#report-form").addEventListener("submit", async (e) => {
       ...(upc ? { upc } : {}),
     });
     if (error) {
-      if (photoPath) sb.storage.from(BUCKET).remove([photoPath]);
+      removePhotos([photoPath]);
       throw error;
     }
     // Keep the location selected: people usually report several items in one aisle.
@@ -1196,7 +1259,7 @@ const BARCODE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 5h
 
 // Shared by the checklist and the Reviewed tab.
 function itemThumb(i) {
-  const url = photoUrl(i.photo_path);
+  const url = thumbUrl(i.photo_path);
   return url
     ? `<button class="thumb" data-act="photo" aria-label="View photo" style="background-image:url('${esc(url)}')"></button>`
     : `<div class="thumb empty">${NO_PHOTO_ICON}</div>`;
@@ -1241,7 +1304,12 @@ function itemCard(i, onHold) {
         ? `<button class="btn" data-act="resume">Resume</button>`
         : `<button class="btn warn" data-act="hold">Hold</button>`}
     </div>
-    ${mine ? `<div class="item-extra"><button class="link-btn" data-act="cancel">Cancel my request</button></div>` : ""}
+    ${mine || state.profile?.is_admin
+      ? `<div class="item-extra">
+          <button class="link-btn" data-act="edit">Edit</button>
+          ${mine ? `<button class="link-btn" data-act="cancel">Cancel my request</button>` : ""}
+        </div>`
+      : ""}
   </article>`;
 }
 
@@ -1257,11 +1325,12 @@ $("#checklist").addEventListener("click", async (e) => {
   }
 
   switch (btn.dataset.act) {
-    case "photo": {
-      $("#photo-full").src = photoUrl(item.photo_path) || "";
-      $("#dlg-photo").showModal();
+    case "photo":
+      showPhoto(item.photo_path);
       break;
-    }
+    case "edit":
+      openEdit(item);
+      break;
     case "found":
       // No confirm step: a mistake can be fixed on the Reviewed tab.
       await closeItem(item, "found", null, card);
@@ -1286,11 +1355,13 @@ $("#checklist").addEventListener("click", async (e) => {
   }
 });
 
+// Deletes photos and their thumbnails.
 function removePhotos(paths) {
-  const list = (paths || []).filter(Boolean);
+  const list = (paths || []).filter(Boolean).flatMap((p) => [p, thumbOf(p)]);
   if (!list.length) return;
   sb.storage.from(BUCKET).remove(list);
   for (const p of list) state.signed.delete(p);
+  saveSignedCache();
 }
 
 async function closeItem(item, outcome, reason, card) {
@@ -1327,7 +1398,116 @@ async function updateItem(item, changes, msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Reviewed: found / can't get in the last day, so mistakes can be fixed
+// Edit a report (the person who reported it, or an admin)
+// ---------------------------------------------------------------------------
+
+const editing = { item: null, photo: null, previewUrl: null };
+
+function setEditPreview(url) {
+  $("#edit-photo-img").src = url || "";
+  $("#edit-photo-img").hidden = !url;
+  $("#edit-photo-none").hidden = !!url;
+}
+
+function openEdit(item) {
+  editing.item = item;
+  editing.photo = null;
+  const mine = item.reported_by === state.user.id;
+
+  $("#edit-name").value = item.name || "";
+  $("#edit-upc").value = item.upc ? upcLabel(item.upc).replace(/\s/g, "") : "";
+  $("#edit-note").value = item.note || "";
+  $("#edit-notify").checked = !!item.notify_found;
+  $("#edit-notify-wrap").hidden = !mine; // it's the reporter's notification
+  $("#edit-error").textContent = "";
+  $("#edit-photo-btn").textContent = item.photo_path ? "Retake photo" : "Add photo";
+
+  const locs = allLocations();
+  if (!locs.includes(item.location)) locs.push(item.location);
+  $("#edit-location").innerHTML = locs.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  $("#edit-location").value = item.location;
+
+  setEditPreview(thumbUrl(item.photo_path));
+  $("#dlg-edit").showModal();
+}
+
+$("#dlg-edit").addEventListener("close", () => {
+  if (editing.previewUrl) URL.revokeObjectURL(editing.previewUrl);
+  Object.assign(editing, { item: null, photo: null, previewUrl: null });
+});
+
+$("#edit-photo-btn").addEventListener("click", () => $("#edit-photo-input").click());
+
+$("#edit-photo-input").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    editing.photo = await compressImage(file);
+  } catch {
+    if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size < 3_000_000) editing.photo = file;
+    else return toast("Couldn't read that photo. Try again.");
+  }
+  if (editing.previewUrl) URL.revokeObjectURL(editing.previewUrl);
+  editing.previewUrl = URL.createObjectURL(editing.photo);
+  setEditPreview(editing.previewUrl);
+});
+
+$("#edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const item = editing.item;
+  if (!item) return;
+  const err = $("#edit-error");
+  err.textContent = "";
+
+  const name = $("#edit-name").value.trim();
+  const note = $("#edit-note").value.trim();
+  const upcText = $("#edit-upc").value.trim();
+  const upc = upcText ? toGtin14(upcText) : null;
+  const loc = $("#edit-location").value;
+  if (upcText && !upc) return (err.textContent = "That UPC doesn't look right. Type the 13-digit number from the tag, or leave it blank.");
+  if (!name && !upc && !item.photo_path && !editing.photo) {
+    return (err.textContent = "Add a photo of the tag or type the item name.");
+  }
+
+  const btn = $("#edit-save");
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  let newPath = null;
+  try {
+    if (editing.photo) newPath = await uploadPhoto(editing.photo);
+    const changes = {
+      name: name || null,
+      location: loc,
+      note: note || null,
+      ...("upc" in item || upc ? { upc: upc || null } : {}),
+      ...(item.reported_by === state.user.id ? { notify_found: $("#edit-notify").checked } : {}),
+      ...(newPath ? { photo_path: newPath } : {}),
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await sb.from("items").update(changes).eq("id", item.id).select().maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error("That item was already closed or removed.");
+
+    if (newPath) {
+      removePhotos([item.photo_path]); // the old photo
+      await signPhotos([newPath]);
+    }
+    Object.assign(item, data);
+    renderChecklist();
+    $("#dlg-edit").close();
+    toast("Saved");
+  } catch (ex) {
+    if (newPath) removePhotos([newPath]);
+    err.textContent = friendlyError(ex);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save";
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reviewed: found / can't get in the last 12 hours, so mistakes can be fixed
 // ---------------------------------------------------------------------------
 
 function renderReviewed() {
@@ -1337,7 +1517,7 @@ function renderReviewed() {
     return;
   }
   if (!state.reviewed.length) {
-    list.innerHTML = `<div class="empty-state"><p><strong>Nothing reviewed yet</strong><br>Items marked found or can't get show up here for 24 hours.</p></div>`;
+    list.innerHTML = `<div class="empty-state"><p><strong>Nothing reviewed yet</strong><br>Items marked found or can't get show up here for 12 hours.</p></div>`;
     return;
   }
   list.innerHTML = state.reviewed.map(reviewedCard).join("");
@@ -1383,8 +1563,7 @@ $("#reviewed-list").addEventListener("click", async (e) => {
   let call, msg;
   switch (btn.dataset.act) {
     case "photo":
-      $("#photo-full").src = photoUrl(r.photo_path) || "";
-      $("#dlg-photo").showModal();
+      showPhoto(r.photo_path);
       return;
     case "reopen":
       call = () => sb.rpc("reopen_item", { p_id: r.id });
@@ -1614,7 +1793,7 @@ $("#member-list").addEventListener("click", async (e) => {
     btn.disabled = false;
     return toast(friendlyError(error), 4000);
   }
-  if (data?.length) sb.storage.from(BUCKET).remove(data);
+  removePhotos(data);
   toast(`${name} removed`);
   renderAdmin();
   loadItems();

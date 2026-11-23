@@ -1,10 +1,10 @@
 # Backstock List
 
-A shared backstock to-do list for phones. Snap a photo of the shelf tag, pick the aisle, and send it. Teammates see it within seconds, then mark it **Found**, **Can't get** (with a reason), or **Hold**. The person who reported the item is notified. Closed items stay on the **Reviewed** tab for 24 hours so mistakes can be fixed, then they and their photos are deleted automatically.
+A shared backstock to-do list for phones. Snap a photo of the shelf tag, pick the aisle, and send it. Teammates see it within seconds, then mark it **Found**, **Can't get** (with a reason), or **Hold**. The person who reported the item is notified. Closed items stay on the **Reviewed** tab for 12 hours so mistakes can be fixed, then they and their photos are deleted automatically.
 
 - **Report:** camera, location dropdown (anyone can add a new location for the whole team), optional name, UPC and note, plus an optional "notify me when found" toggle. The item name and UPC are read from the tag photo on the phone when possible.
 - **Checklist:** grouped by aisle and endcap, with a location filter and an "On hold" section. Tap an item with a UPC to show a scannable barcode.
-- **Reviewed:** items marked found or can't get in the last 24 hours. Put one back on the list or change its result if it was a mistake.
+- **Reviewed:** items marked found or can't get in the last 12 hours. Put one back on the list or change its result if it was a mistake.
 - **Updates:** results for items you reported, as push notifications and an in-app list
 - Works in iPhone Safari and Android Chrome. Free to run: Supabase free tier plus GitHub Pages.
 

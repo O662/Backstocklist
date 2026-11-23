@@ -115,9 +115,9 @@
         <div id="checklist"></div>
       </section>
 
-      <!-- Recently reviewed (found / can't get in the last day) -->
+      <!-- Recently reviewed (found / can't get in the last 12 hours) -->
       <section id="view-reviewed" class="view" hidden>
-        <p class="muted small">Items marked found or can't get in the last 24 hours. If one was a mistake, change it here.</p>
+        <p class="muted small">Items marked found or can't get in the last 12 hours. If one was a mistake, change it here.</p>
         <div id="reviewed-list"></div>
       </section>
 
@@ -230,6 +230,39 @@
       <div class="row">
         <button class="btn" type="button" data-close>Back</button>
         <button class="btn warn grow" value="ok">Hold</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-edit" class="sheet">
+    <form id="edit-form" class="stack">
+      <h2>Edit request</h2>
+      <div class="edit-photo">
+        <img id="edit-photo-img" alt="Tag photo" hidden>
+        <div id="edit-photo-none" class="thumb empty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5Z"/></svg></div>
+        <button type="button" class="btn" id="edit-photo-btn">Retake photo</button>
+        <input id="edit-photo-input" type="file" accept="image/*" capture="environment" hidden>
+      </div>
+      <label><span>Item <span class="muted">(optional)</span></span>
+        <input id="edit-name" maxlength="120" autocomplete="off">
+      </label>
+      <label><span>UPC <span class="muted">(optional)</span></span>
+        <input id="edit-upc" inputmode="numeric" maxlength="20" placeholder="13-digit number on the tag" autocomplete="off">
+      </label>
+      <label><span>Location</span>
+        <select id="edit-location" required></select>
+      </label>
+      <label><span>Note <span class="muted">(optional)</span></span>
+        <input id="edit-note" maxlength="300" autocomplete="off">
+      </label>
+      <label class="toggle" id="edit-notify-wrap">
+        <input id="edit-notify" type="checkbox">
+        <span>Notify me when it's found</span>
+      </label>
+      <p id="edit-error" class="error" role="alert"></p>
+      <div class="row">
+        <button class="btn" type="button" data-close>Back</button>
+        <button class="btn primary grow" type="submit" id="edit-save">Save</button>
       </div>
     </form>
   </dialog>

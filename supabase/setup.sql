@@ -34,7 +34,7 @@ alter table public.items add column if not exists upc text;
 alter table public.items drop constraint if exists items_upc_check;
 alter table public.items add constraint items_upc_check check (upc ~ '^[0-9]{14}$');
 
--- Items marked found / can't get stay here for a day (the Reviewed tab), so a
+-- Items marked found / can't get stay here for 12 hours (the Reviewed tab), so a
 -- mistake can be fixed. Older rows are cleared out whenever an item is closed.
 create table if not exists public.reviewed (
   id           uuid primary key,          -- same id the item had on the list
@@ -382,7 +382,7 @@ $$;
 
 -- Close an item: notify the reporter if needed, then take it off the list.
 -- p_outcome: 'found' | 'unavailable' | 'cancelled' (reporter withdraws it)
--- Found / can't get items move to public.reviewed for a day so a mistake can
+-- Found / can't get items move to public.reviewed for 12 hours so a mistake can
 -- be fixed; cancelled ones are deleted. Returns the photo paths the app
 -- should delete: the cancelled item's, plus any reviewed items that expired.
 create or replace function public.close_item(p_item_id uuid, p_outcome text, p_reason text default null)
@@ -444,7 +444,7 @@ begin
   delete from public.items where id = p_item_id;
 
   with gone as (
-    delete from public.reviewed where closed_at < now() - interval '24 hours' returning photo_path
+    delete from public.reviewed where closed_at < now() - interval '12 hours' returning photo_path
   )
   select coalesce(jsonb_agg(photo_path) filter (where photo_path is not null), '[]'::jsonb)
     into expired from gone;
@@ -580,6 +580,35 @@ drop trigger if exists items_notify_hold on public.items;
 create trigger items_notify_hold
   after update of status on public.items
   for each row execute function public.notify_item_hold();
+
+-- Anyone on the team can hold/resume an item, but only the person who
+-- reported it (or an admin) can edit what it says.
+create or replace function public.guard_item_edit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.reported_by is distinct from old.reported_by or new.created_at is distinct from old.created_at then
+    raise exception 'Who reported an item and when can''t be changed';
+  end if;
+  if (new.name, new.location, new.note, new.upc, new.photo_path, new.notify_found)
+       is distinct from (old.name, old.location, old.note, old.upc, old.photo_path, old.notify_found)
+     and auth.uid() is not null
+     and old.reported_by <> auth.uid()
+     and not public.is_admin() then
+    raise exception 'Only the person who reported this (or an admin) can edit it';
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.guard_item_edit() from public, anon, authenticated;
+
+drop trigger if exists items_guard_edit on public.items;
+create trigger items_guard_edit
+  before update on public.items
+  for each row execute function public.guard_item_edit();
 
 -- Save this phone's push subscription for the signed-in user.
 create or replace function public.save_push_subscription(p_endpoint text, p_p256dh text, p_auth text)
