@@ -179,7 +179,7 @@ main {
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: 1fr 1fr;
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
   height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface);
@@ -257,13 +257,19 @@ main {
 .item-actions .btn { padding: 8px 6px; font-size: .92rem; }
 .item-extra { padding: 0 12px 10px; margin-top: -4px; }
 
+/* Items with a UPC: tap the card to show its barcode. */
+.item.has-upc .item-main { cursor: zoom-in; }
+.item-upc { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); }
+.item-upc svg { width: 18px; height: 18px; }
+.item-upc span { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }
+
+/* Reviewed tab */
+.item-actions.two { grid-template-columns: 1fr 1fr; }
+.review-status { font-size: .88rem; font-weight: 600; overflow-wrap: anywhere; }
+.review-status.found { color: var(--success); }
+.review-status.unavailable { color: var(--danger); }
+
 /* Barcodes are always black on white, even in dark mode, so scanners read them. */
-.barcode {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  width: calc(100% - 24px); margin: -2px 12px 12px; padding: 6px 0 4px;
-  background: #fff; color: #000; border: 1px solid var(--border); border-radius: 10px;
-  cursor: zoom-in;
-}
 .barcode-bars { display: block; width: 100%; max-width: 260px; height: 48px; }
 .barcode-num { font: 600 .85rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em; }
 .barcode-viewer {
@@ -406,6 +412,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 }
 .banner.hold        { --banner-bg: #facc15; --banner-fg: #1c1917; }
 .banner.unavailable { --banner-bg: #b91c1c; --banner-fg: #ffffff; }
+.banner.reopened    { --banner-bg: #1d4ed8; --banner-fg: #ffffff; }
 .banner.out { transform: translateY(calc(-100% - 24px)); opacity: 0; }
 .banner.dragging { transition: none; }
 .banner-body {

@@ -115,6 +115,12 @@
         <div id="checklist"></div>
       </section>
 
+      <!-- Recently reviewed (found / can't get in the last day) -->
+      <section id="view-reviewed" class="view" hidden>
+        <p class="muted small">Items marked found or can't get in the last 24 hours. If one was a mistake, change it here.</p>
+        <div id="reviewed-list"></div>
+      </section>
+
       <!-- Updates (notifications for things I reported) -->
       <section id="view-updates" class="view" hidden>
         <div class="row-between">
@@ -194,6 +200,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h2v2H3V5Zm4 0h14v2H7V5ZM3 11h2v2H3v-2Zm4 0h14v2H7v-2Zm-4 6h2v2H3v-2Zm4 0h14v2H7v-2Z"/></svg>
         <span>Checklist</span>
         <span id="checklist-badge" class="badge" hidden>0</span>
+      </button>
+      <button data-view="reviewed" class="tab">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3Zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12Z"/></svg>
+        <span>Reviewed</span>
       </button>
     </nav>
   </div>

@@ -34,6 +34,25 @@ alter table public.items add column if not exists upc text;
 alter table public.items drop constraint if exists items_upc_check;
 alter table public.items add constraint items_upc_check check (upc ~ '^[0-9]{14}$');
 
+-- Items marked found / can't get stay here for a day (the Reviewed tab), so a
+-- mistake can be fixed. Older rows are cleared out whenever an item is closed.
+create table if not exists public.reviewed (
+  id           uuid primary key,          -- same id the item had on the list
+  name         text,
+  location     text not null,
+  note         text,
+  upc          text,
+  photo_path   text,
+  notify_found boolean not null default false,
+  reported_by  uuid not null references public.profiles (id) on delete cascade,
+  reported_at  timestamptz not null,
+  outcome      text not null check (outcome in ('found', 'unavailable')),
+  reason       text,
+  closed_by    uuid references public.profiles (id) on delete set null,
+  closed_at    timestamptz not null default now()
+);
+create index if not exists reviewed_closed_idx on public.reviewed (closed_at desc);
+
 -- Messages for the person who reported an item ("found it" / "can't get it").
 create table if not exists public.notifications (
   id         uuid primary key default gen_random_uuid(),
@@ -47,7 +66,7 @@ create index if not exists notifications_user_idx on public.notifications (user_
 -- 'hold' was added later; refresh the allowed outcomes on existing databases.
 alter table public.notifications drop constraint if exists notifications_outcome_check;
 alter table public.notifications add constraint notifications_outcome_check
-  check (outcome in ('found', 'unavailable', 'hold'));
+  check (outcome in ('found', 'unavailable', 'hold', 'reopened'));
 
 -- Team-wide settings (a single row). Admins change these from the app.
 --   join_code: store code required to join (null = anyone with the link can join)
@@ -135,6 +154,12 @@ create policy "team updates items" on public.items
   for update to authenticated using (public.is_member()) with check (public.is_member());
 -- No delete policy: items are closed through close_item() below.
 
+alter table public.reviewed enable row level security;
+drop policy if exists "team reads reviewed" on public.reviewed;
+create policy "team reads reviewed" on public.reviewed
+  for select to authenticated using (public.is_member());
+-- Changed only through reopen_item() / revise_item() below.
+
 drop policy if exists "read own notifications" on public.notifications;
 create policy "read own notifications" on public.notifications
   for select to authenticated using (user_id = auth.uid());
@@ -157,6 +182,8 @@ revoke update on public.profiles from authenticated;
 grant select on public.profiles to authenticated;
 grant update (display_name) on public.profiles to authenticated; -- people can't make themselves admin
 grant select, insert, update on public.items to authenticated;
+revoke all on public.reviewed from anon, authenticated;
+grant select on public.reviewed to authenticated;
 grant select, delete on public.notifications to authenticated;
 grant select, delete on public.push_subscriptions to authenticated;
 revoke all on public.locations from anon;
@@ -340,7 +367,10 @@ begin
     raise exception 'You can''t remove yourself. Use "Leave on this phone" instead.';
   end if;
   select coalesce(jsonb_agg(photo_path) filter (where photo_path is not null), '[]'::jsonb)
-    into paths from public.items where reported_by = p_user_id;
+    into paths
+    from (select photo_path from public.items where reported_by = p_user_id
+          union all
+          select photo_path from public.reviewed where reported_by = p_user_id) p;
   delete from public.notifications where user_id = p_user_id;
   delete from public.push_subscriptions where user_id = p_user_id;
   delete from public.profiles where id = p_user_id; -- also deletes their open items
@@ -350,8 +380,11 @@ $$;
 
 -- ---------- Items ----------
 
--- Close an item: notify the reporter if needed, then delete it.
+-- Close an item: notify the reporter if needed, then take it off the list.
 -- p_outcome: 'found' | 'unavailable' | 'cancelled' (reporter withdraws it)
+-- Found / can't get items move to public.reviewed for a day so a mistake can
+-- be fixed; cancelled ones are deleted. Returns the photo paths the app
+-- should delete: the cancelled item's, plus any reviewed items that expired.
 create or replace function public.close_item(p_item_id uuid, p_outcome text, p_reason text default null)
 returns jsonb
 language plpgsql
@@ -362,6 +395,7 @@ declare
   it        public.items;
   closer    text;
   item_name text;
+  expired   jsonb;
 begin
   if not public.is_member() then
     raise exception 'Join the team first';
@@ -398,8 +432,122 @@ begin
     end if;
   end if;
 
+  if p_outcome <> 'cancelled' then
+    insert into public.reviewed (id, name, location, note, upc, photo_path, notify_found,
+                                 reported_by, reported_at, outcome, reason, closed_by)
+    values (it.id, it.name, it.location, it.note, it.upc, it.photo_path, it.notify_found,
+            it.reported_by, it.created_at, p_outcome,
+            case when p_outcome = 'unavailable' then left(nullif(trim(p_reason), ''), 200) end, auth.uid())
+    on conflict (id) do update set outcome = excluded.outcome, reason = excluded.reason,
+                                   closed_by = excluded.closed_by, closed_at = now();
+  end if;
   delete from public.items where id = p_item_id;
-  return jsonb_build_object('closed', true, 'photo_path', it.photo_path);
+
+  with gone as (
+    delete from public.reviewed where closed_at < now() - interval '24 hours' returning photo_path
+  )
+  select coalesce(jsonb_agg(photo_path) filter (where photo_path is not null), '[]'::jsonb)
+    into expired from gone;
+
+  return jsonb_build_object(
+    'closed', true,
+    'photo_path', case when p_outcome = 'cancelled' then it.photo_path end,
+    'expired_photos', expired);
+end;
+$$;
+
+-- Reviewed tab: put an item back on the list.
+create or replace function public.reopen_item(p_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  r     public.reviewed;
+  who   text;
+begin
+  if not public.is_member() then
+    raise exception 'Join the team first';
+  end if;
+
+  delete from public.reviewed where id = p_id returning * into r;
+  if not found then
+    return jsonb_build_object('reopened', false);  -- already reopened, or expired
+  end if;
+
+  insert into public.items (id, name, location, note, upc, photo_path, notify_found, reported_by, created_at)
+  values (r.id, r.name, r.location, r.note, r.upc, r.photo_path, r.notify_found, r.reported_by, r.reported_at);
+
+  -- If the reporter was told it was found / can't be got, tell them it's back.
+  if r.reported_by <> auth.uid() and r.closed_by is distinct from r.reported_by
+     and (r.outcome = 'unavailable' or r.notify_found) then
+    select display_name into who from public.profiles where id = auth.uid();
+    insert into public.notifications (user_id, outcome, title, body)
+    values (r.reported_by, 'reopened',
+            'Back on the list: ' || coalesce(nullif(trim(r.name), ''), 'Item in ' || r.location),
+            coalesce(who, 'A teammate') || ' put it back on the list (' || r.location || ')');
+  end if;
+  return jsonb_build_object('reopened', true);
+end;
+$$;
+
+-- Reviewed tab: switch a result between found and can't get.
+create or replace function public.revise_item(p_id uuid, p_outcome text, p_reason text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  r         public.reviewed;
+  who       text;
+  item_name text;
+  was_told  boolean;
+begin
+  if not public.is_member() then
+    raise exception 'Join the team first';
+  end if;
+  if p_outcome not in ('found', 'unavailable') then
+    raise exception 'Unknown outcome %', p_outcome;
+  end if;
+
+  select * into r from public.reviewed where id = p_id for update;
+  if not found then
+    return jsonb_build_object('changed', false);
+  end if;
+  if r.outcome = p_outcome then
+    return jsonb_build_object('changed', true);
+  end if;
+
+  -- Was the reporter notified of the old result?
+  was_told := r.closed_by is distinct from r.reported_by and (r.outcome = 'unavailable' or r.notify_found);
+
+  update public.reviewed
+     set outcome   = p_outcome,
+         reason    = case when p_outcome = 'unavailable' then left(nullif(trim(p_reason), ''), 200) end,
+         closed_by = auth.uid(),
+         closed_at = now()
+   where id = p_id;
+
+  if r.reported_by <> auth.uid() then
+    select display_name into who from public.profiles where id = auth.uid();
+    who       := coalesce(who, 'A teammate');
+    item_name := coalesce(nullif(trim(r.name), ''), 'Item in ' || r.location);
+    if p_outcome = 'unavailable' then
+      insert into public.notifications (user_id, outcome, title, body)
+      values (r.reported_by, 'unavailable',
+              'Can''t get: ' || item_name,
+              who || ': ' || coalesce(nullif(trim(p_reason), ''), 'No reason given') || ' (' || r.location || ')');
+    elsif r.notify_found or was_told then
+      -- Always correct an earlier "can't get".
+      insert into public.notifications (user_id, outcome, title, body)
+      values (r.reported_by, 'found',
+              'Found: ' || item_name,
+              who || ' found it after all (' || r.location || ')');
+    end if;
+  end if;
+  return jsonb_build_object('changed', true);
 end;
 $$;
 
@@ -491,6 +639,10 @@ revoke all on function public.is_member() from public, anon;
 grant execute on function public.join_team(text, text) to authenticated;
 grant execute on function public.is_member() to authenticated;
 grant execute on function public.close_item(uuid, text, text) to authenticated;
+revoke all on function public.reopen_item(uuid) from public, anon;
+revoke all on function public.revise_item(uuid, text, text) from public, anon;
+grant execute on function public.reopen_item(uuid) to authenticated;
+grant execute on function public.revise_item(uuid, text, text) to authenticated;
 grant execute on function public.save_push_subscription(text, text, text) to authenticated;
 grant execute on function public.send_test_notification() to authenticated;
 
@@ -523,5 +675,9 @@ begin
   if not exists (select 1 from pg_publication_tables
                  where pubname = 'supabase_realtime' and tablename = 'notifications') then
     alter publication supabase_realtime add table public.notifications;
+  end if;
+  if not exists (select 1 from pg_publication_tables
+                 where pubname = 'supabase_realtime' and tablename = 'reviewed') then
+    alter publication supabase_realtime add table public.reviewed;
   end if;
 end $$;

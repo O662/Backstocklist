@@ -18,6 +18,8 @@ const state = {
   profile: null,
   profiles: new Map(), // id -> display_name
   items: [],
+  reviewed: [], // found / can't get in the last day
+  reviewedError: null,
   updates: [],
   view: "report",
   photoBlob: null, // what gets uploaded (cropped if the user cropped)
@@ -36,6 +38,7 @@ const state = {
 const VIEWS = {
   report: "Report item",
   checklist: "Checklist",
+  reviewed: "Recently reviewed",
   updates: "Updates",
   settings: "Settings",
 };
@@ -297,6 +300,7 @@ function go(view) {
     else t.removeAttribute("aria-current");
   });
   if (view === "updates") markUpdatesSeen();
+  if (view === "reviewed") loadReviewed();
   if (view === "settings") {
     updatePushUI();
     renderAdmin();
@@ -332,6 +336,10 @@ function subscribeLive() {
   state.channel = sb
     .channel("backstock")
     .on("postgres_changes", { event: "*", schema: "public", table: "items" }, soon)
+    .on("postgres_changes", { event: "*", schema: "public", table: "reviewed" }, () => {
+      clearTimeout(reviewedDebounce);
+      reviewedDebounce = setTimeout(loadReviewed, 250);
+    })
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${state.user.id}` },
@@ -352,13 +360,13 @@ async function refreshAll() {
   const { data: me, error } = await sb.from("profiles").select("id, display_name, is_admin").eq("id", state.user.id).maybeSingle();
   if (!error && !me) return removedFromTeam();
   if (me) Object.assign(state.profile, me);
-  await Promise.all([loadLocations(), loadItems(), loadUpdates()]);
+  await Promise.all([loadLocations(), loadItems(), loadReviewed(), loadUpdates()]);
 }
 
 async function removedFromTeam() {
   if (state.channel) await sb.removeChannel(state.channel);
   clearInterval(state.timer);
-  Object.assign(state, { profile: null, items: [], updates: [], channel: null, started: false });
+  Object.assign(state, { profile: null, items: [], reviewed: [], updates: [], channel: null, started: false });
   showJoin();
   $("#join-error").textContent = "You were removed from the team. Ask a lead if that's a mistake.";
 }
@@ -385,6 +393,28 @@ async function loadItems() {
     renderChecklist();
   })().finally(() => (loadingItems = null));
   return loadingItems;
+}
+
+let reviewedDebounce;
+let loadingReviewed = null;
+async function loadReviewed() {
+  if (loadingReviewed) return loadingReviewed;
+  loadingReviewed = (async () => {
+    const since = new Date(Date.now() - 24 * 3600_000).toISOString();
+    const { data, error } = await sb
+      .from("reviewed")
+      .select("*")
+      .gte("closed_at", since)
+      .order("closed_at", { ascending: false });
+    // Shown on the Reviewed tab only, e.g. before setup.sql has been re-run.
+    state.reviewedError = error ? friendlyError(error) : null;
+    state.reviewed = data ?? [];
+    const unknown = state.reviewed.some((r) => !state.profiles.has(r.reported_by) || (r.closed_by && !state.profiles.has(r.closed_by)));
+    if (unknown) await loadProfiles();
+    await signPhotos(state.reviewed.map((r) => r.photo_path).filter(Boolean));
+    renderReviewed();
+  })().finally(() => (loadingReviewed = null));
+  return loadingReviewed;
 }
 
 async function signPhotos(paths) {
@@ -1161,29 +1191,49 @@ function renderChecklist() {
   $("#checklist").innerHTML = html;
 }
 
-function itemCard(i, onHold) {
+const NO_PHOTO_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5Z"/></svg>`;
+const BARCODE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 5h2v14H2V5Zm3 0h1v14H5V5Zm2 0h3v14H7V5Zm4 0h1v14h-1V5Zm3 0h2v14h-2V5Zm3 0h1v14h-1V5Zm2 0h3v14h-3V5Z"/></svg>`;
+
+// Shared by the checklist and the Reviewed tab.
+function itemThumb(i) {
   const url = photoUrl(i.photo_path);
-  const reporter = state.profiles.get(i.reported_by) || "Someone";
-  const mine = i.reported_by === state.user.id;
-  const thumb = url
+  return url
     ? `<button class="thumb" data-act="photo" aria-label="View photo" style="background-image:url('${esc(url)}')"></button>`
-    : `<div class="thumb empty"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2ZM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5Z"/></svg></div>`;
-  const name = i.name
+    : `<div class="thumb empty">${NO_PHOTO_ICON}</div>`;
+}
+
+function itemTitle(i) {
+  return i.name
     ? `<div class="item-name">${esc(i.name)}</div>`
     : `<div class="item-name placeholder">See tag photo</div>`;
+}
+
+function itemUpc(i) {
+  return i.upc ? `<div class="item-upc">${BARCODE_ICON}<span>${esc(upcLabel(i.upc))}</span></div>` : "";
+}
+
+function showBarcode(item) {
+  $("#barcode-item").textContent = item.name || "";
+  $("#barcode-full").innerHTML = barcodeBlock(item.upc);
+  $("#dlg-barcode").showModal();
+}
+
+function itemCard(i, onHold) {
+  const reporter = state.profiles.get(i.reported_by) || "Someone";
+  const mine = i.reported_by === state.user.id;
   const holder = i.held_by ? state.profiles.get(i.held_by) || "Someone" : null;
 
-  return `<article class="item${onHold ? " on-hold" : ""}" data-id="${i.id}">
+  return `<article class="item${onHold ? " on-hold" : ""}${i.upc ? " has-upc" : ""}" data-id="${i.id}">
     <div class="item-main">
-      ${thumb}
+      ${itemThumb(i)}
       <div class="item-info">
-        ${name}
+        ${itemTitle(i)}
         <div class="item-meta">${onHold ? `${esc(i.location)} · ` : ""}${mine ? "You" : esc(reporter)} · ${ago(i.created_at)}</div>
+        ${itemUpc(i)}
         ${i.note ? `<div class="item-note">${esc(i.note)}</div>` : ""}
         ${onHold ? `<div class="hold-note">On hold${holder ? ` by ${esc(holder)}` : ""}${i.hold_note ? `: ${esc(i.hold_note)}` : ""}</div>` : ""}
       </div>
     </div>
-    ${i.upc ? `<button class="barcode" data-act="barcode" aria-label="Show barcode, UPC ${esc(upcLabel(i.upc))}">${barcodeBlock(i.upc)}</button>` : ""}
     <div class="item-actions">
       <button class="btn success" data-act="found">Found</button>
       <button class="btn danger" data-act="unavailable">Can't get</button>
@@ -1196,11 +1246,15 @@ function itemCard(i, onHold) {
 }
 
 $("#checklist").addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-act]");
-  if (!btn) return;
-  const card = btn.closest(".item");
-  const item = state.items.find((i) => i.id === card.dataset.id);
+  const card = e.target.closest(".item");
+  const item = card && state.items.find((i) => i.id === card.dataset.id);
   if (!item) return;
+  const btn = e.target.closest("[data-act]");
+  if (!btn) {
+    // Tapping the item itself shows its barcode for scanning.
+    if (item.upc && e.target.closest(".item-main")) showBarcode(item);
+    return;
+  }
 
   switch (btn.dataset.act) {
     case "photo": {
@@ -1208,28 +1262,10 @@ $("#checklist").addEventListener("click", async (e) => {
       $("#dlg-photo").showModal();
       break;
     }
-    case "barcode": {
-      $("#barcode-item").textContent = item.name || "";
-      $("#barcode-full").innerHTML = barcodeBlock(item.upc);
-      $("#dlg-barcode").showModal();
-      break;
-    }
-    case "found": {
-      // Two taps to confirm so a stray tap doesn't delete something.
-      if (btn.dataset.armed !== "1") {
-        btn.dataset.armed = "1";
-        btn.textContent = "Tap to confirm";
-        setTimeout(() => {
-          if (btn.isConnected) {
-            btn.dataset.armed = "";
-            btn.textContent = "Found";
-          }
-        }, 3000);
-        return;
-      }
+    case "found":
+      // No confirm step: a mistake can be fixed on the Reviewed tab.
       await closeItem(item, "found", null, card);
       break;
-    }
     case "unavailable": {
       const reason = await askReason(item);
       if (reason) await closeItem(item, "unavailable", reason, card);
@@ -1250,6 +1286,13 @@ $("#checklist").addEventListener("click", async (e) => {
   }
 });
 
+function removePhotos(paths) {
+  const list = (paths || []).filter(Boolean);
+  if (!list.length) return;
+  sb.storage.from(BUCKET).remove(list);
+  for (const p of list) state.signed.delete(p);
+}
+
 async function closeItem(item, outcome, reason, card) {
   card?.querySelectorAll("button").forEach((b) => (b.disabled = true));
   const { data, error } = await sb.rpc("close_item", {
@@ -1262,12 +1305,12 @@ async function closeItem(item, outcome, reason, card) {
     toast(friendlyError(error));
     return;
   }
-  if (data?.photo_path) {
-    sb.storage.from(BUCKET).remove([data.photo_path]);
-    state.signed.delete(data.photo_path);
-  }
+  // Found / can't get keep their photo for the Reviewed tab; it's deleted
+  // when the item expires from there (expired_photos).
+  removePhotos([data?.photo_path, ...(data?.expired_photos || [])]);
   state.items = state.items.filter((i) => i.id !== item.id);
   renderChecklist();
+  loadReviewed();
   if (!data?.closed) toast("Someone already took care of that one");
   else toast({ found: "Marked found", unavailable: "Reported back", cancelled: "Request removed" }[outcome]);
 }
@@ -1282,6 +1325,96 @@ async function updateItem(item, changes, msg) {
   renderChecklist();
   toast(msg);
 }
+
+// ---------------------------------------------------------------------------
+// Reviewed: found / can't get in the last day, so mistakes can be fixed
+// ---------------------------------------------------------------------------
+
+function renderReviewed() {
+  const list = $("#reviewed-list");
+  if (state.reviewedError) {
+    list.innerHTML = `<div class="empty-state"><p>Couldn't load reviewed items.<br>${esc(state.reviewedError)}</p></div>`;
+    return;
+  }
+  if (!state.reviewed.length) {
+    list.innerHTML = `<div class="empty-state"><p><strong>Nothing reviewed yet</strong><br>Items marked found or can't get show up here for 24 hours.</p></div>`;
+    return;
+  }
+  list.innerHTML = state.reviewed.map(reviewedCard).join("");
+}
+
+function reviewedCard(r) {
+  const nameOf = (id) => (id === state.user.id ? "You" : state.profiles.get(id) || "Someone");
+  const by = r.closed_by ? nameOf(r.closed_by) : "Someone";
+  const status =
+    r.outcome === "found"
+      ? `Found by ${esc(by)} · ${ago(r.closed_at)}`
+      : `Can't get · ${esc(by)}${r.reason ? `: ${esc(r.reason)}` : ""} · ${ago(r.closed_at)}`;
+  return `<article class="item${r.upc ? " has-upc" : ""}" data-id="${r.id}">
+    <div class="item-main">
+      ${itemThumb(r)}
+      <div class="item-info">
+        ${itemTitle(r)}
+        <div class="item-meta">${esc(r.location)} · reported by ${esc(nameOf(r.reported_by))}</div>
+        ${itemUpc(r)}
+        ${r.note ? `<div class="item-note">${esc(r.note)}</div>` : ""}
+        <div class="review-status ${r.outcome}">${status}</div>
+      </div>
+    </div>
+    <div class="item-actions two">
+      <button class="btn" data-act="reopen">Put back on list</button>
+      ${r.outcome === "found"
+        ? `<button class="btn danger" data-act="to-unavailable">Change to can't get</button>`
+        : `<button class="btn success" data-act="to-found">Change to found</button>`}
+    </div>
+  </article>`;
+}
+
+$("#reviewed-list").addEventListener("click", async (e) => {
+  const card = e.target.closest(".item");
+  const r = card && state.reviewed.find((x) => x.id === card.dataset.id);
+  if (!r) return;
+  const btn = e.target.closest("[data-act]");
+  if (!btn) {
+    if (r.upc && e.target.closest(".item-main")) showBarcode(r);
+    return;
+  }
+
+  let call, msg;
+  switch (btn.dataset.act) {
+    case "photo":
+      $("#photo-full").src = photoUrl(r.photo_path) || "";
+      $("#dlg-photo").showModal();
+      return;
+    case "reopen":
+      call = () => sb.rpc("reopen_item", { p_id: r.id });
+      msg = "Back on the list";
+      break;
+    case "to-found":
+      call = () => sb.rpc("revise_item", { p_id: r.id, p_outcome: "found", p_reason: null });
+      msg = "Changed to found";
+      break;
+    case "to-unavailable": {
+      const reason = await askReason(r);
+      if (!reason) return;
+      call = () => sb.rpc("revise_item", { p_id: r.id, p_outcome: "unavailable", p_reason: reason });
+      msg = "Changed to can't get";
+      break;
+    }
+    default:
+      return;
+  }
+
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const { data, error } = await call();
+  if (error) {
+    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    return toast(friendlyError(error));
+  }
+  const done = data?.reopened ?? data?.changed;
+  toast(done ? msg : "That one already changed or expired");
+  await Promise.all([loadReviewed(), loadItems()]);
+});
 
 // ---------------------------------------------------------------------------
 // Dialogs
