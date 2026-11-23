@@ -19,7 +19,7 @@ const state = {
   profiles: new Map(), // id -> display_name
   items: [],
   updates: [],
-  view: "checklist",
+  view: "report",
   photoBlob: null,
   photoPreviewUrl: null,
   location: null,
@@ -203,13 +203,13 @@ function startApp() {
   }
 
   const fromHash = location.hash.slice(1);
-  go(VIEWS[fromHash] ? fromHash : localStorage.getItem("lastView") || "checklist");
+  go(VIEWS[fromHash] ? fromHash : "report");
   refreshAll();
   updatePushUI(true);
 }
 
 function go(view) {
-  if (!VIEWS[view]) view = "checklist";
+  if (!VIEWS[view]) view = "report";
   state.view = view;
   for (const v of Object.keys(VIEWS)) $(`#view-${v}`).hidden = v !== view;
   $("#view-title").textContent = VIEWS[view];
@@ -217,7 +217,6 @@ function go(view) {
     if (t.dataset.view === view) t.setAttribute("aria-current", "page");
     else t.removeAttribute("aria-current");
   });
-  if (view === "report" || view === "checklist") localStorage.setItem("lastView", view);
   if (view === "updates") markUpdatesSeen();
   if (view === "settings") {
     updatePushUI();
@@ -228,8 +227,8 @@ function go(view) {
 }
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => go(t.dataset.view)));
-$("#btn-updates").addEventListener("click", () => go(state.view === "updates" ? "checklist" : "updates"));
-$("#btn-settings").addEventListener("click", () => go(state.view === "settings" ? "checklist" : "settings"));
+$("#btn-updates").addEventListener("click", () => go(state.view === "updates" ? "report" : "updates"));
+$("#btn-settings").addEventListener("click", () => go(state.view === "settings" ? "report" : "settings"));
 window.addEventListener("hashchange", () => state.started && go(location.hash.slice(1)));
 
 // Notification tapped while the app was already open.
@@ -261,7 +260,7 @@ function subscribeLive() {
         const n = payload.new;
         if (!state.updates.some((u) => u.id === n.id)) state.updates.unshift(n);
         renderUpdates();
-        toast(`${n.outcome === "found" ? "✅" : "❌"} ${n.title}`, 5000);
+        toast(n.title, 5000);
       },
     )
     .subscribe((status) => {
@@ -439,7 +438,7 @@ $("#report-form").addEventListener("submit", async (e) => {
     $("#item-name").value = "";
     $("#item-note").value = "";
     setPhoto(null);
-    toast("Sent to the list ✓");
+    toast("Sent to the list");
     loadItems();
   } catch (ex) {
     err.textContent = friendlyError(ex);
@@ -529,7 +528,7 @@ function itemCard(i, onHold) {
       </div>
     </div>
     <div class="item-actions">
-      <button class="btn success" data-act="found">✓ Found</button>
+      <button class="btn success" data-act="found">Found</button>
       <button class="btn danger" data-act="unavailable">Can't get</button>
       ${onHold
         ? `<button class="btn" data-act="resume">Resume</button>`
@@ -560,7 +559,7 @@ $("#checklist").addEventListener("click", async (e) => {
         setTimeout(() => {
           if (btn.isConnected) {
             btn.dataset.armed = "";
-            btn.textContent = "✓ Found";
+            btn.textContent = "Found";
           }
         }, 3000);
         return;
@@ -607,7 +606,7 @@ async function closeItem(item, outcome, reason, card) {
   state.items = state.items.filter((i) => i.id !== item.id);
   renderChecklist();
   if (!data?.closed) toast("Someone already took care of that one");
-  else toast({ found: "Marked found ✓", unavailable: "Reported back ✓", cancelled: "Request removed" }[outcome]);
+  else toast({ found: "Marked found", unavailable: "Reported back", cancelled: "Request removed" }[outcome]);
 }
 
 async function updateItem(item, changes, msg) {
@@ -702,7 +701,7 @@ function renderUpdates() {
         .map(
           (u) => `<div class="update ${u.outcome}" data-id="${u.id}">
         <div class="update-body">
-          <div class="update-title">${u.outcome === "found" ? "✅" : "❌"} ${esc(u.title)}</div>
+          <div class="update-title">${esc(u.title)}</div>
           <div class="update-text">${esc(u.body)}</div>
           <div class="muted small">${ago(u.created_at)}</div>
         </div>
@@ -998,7 +997,7 @@ $("#btn-push").addEventListener("click", async () => {
         applicationServerKey: base64UrlToBytes(CONFIG.VAPID_PUBLIC_KEY),
       }));
     await saveSubscription(sub);
-    toast("Notifications on ✓");
+    toast("Notifications on");
   } catch (e) {
     toast(`Couldn't turn on notifications: ${friendlyError(e)}`, 5000);
   } finally {

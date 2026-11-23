@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
     .eq("user_id", note.user_id);
 
   const payload = JSON.stringify({
-    title: (note.outcome === "found" ? "✅ " : "❌ ") + note.title,
+    title: note.title,
     body: note.body,
     tag: note.id,
     url: "./#updates",

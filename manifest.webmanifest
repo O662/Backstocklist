@@ -2,7 +2,7 @@
   "name": "Backstock List",
   "short_name": "Backstock",
   "description": "Report items that need pulling from backstock and work the list together.",
-  "start_url": "./#checklist",
+  "start_url": "./#report",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

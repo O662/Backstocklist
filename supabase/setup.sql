@@ -361,7 +361,7 @@ begin
       insert into public.notifications (user_id, outcome, title, body)
       values (it.reported_by, 'unavailable',
               'Can''t get: ' || item_name,
-              coalesce(nullif(trim(p_reason), ''), 'No reason given') || ' — ' || closer || ' (' || it.location || ')');
+              coalesce(nullif(trim(p_reason), ''), 'No reason given') || ' (' || closer || ', ' || it.location || ')');
     elsif p_outcome = 'found' and it.notify_found then
       insert into public.notifications (user_id, outcome, title, body)
       values (it.reported_by, 'found',

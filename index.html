@@ -20,11 +20,9 @@
   <!-- ============ Join ============ -->
   <section id="screen-join" class="screen centered" hidden>
     <div class="card narrow">
-      <img src="icons/icon-192.png" alt="" class="logo">
       <h1>Backstock List</h1>
-      <p class="muted">Enter your name so teammates know who reported what, and so you get notified about your items.</p>
       <form id="join-form" class="stack">
-        <label><span>Your name</span>
+        <label><span>Name</span>
           <input id="join-name" maxlength="40" placeholder="First name" autocomplete="given-name" required>
         </label>
         <label id="join-code-wrap" hidden><span>Store code</span>
@@ -39,7 +37,7 @@
   <!-- ============ Main app ============ -->
   <div id="app" hidden>
     <header class="topbar">
-      <h1 id="view-title">Checklist</h1>
+      <h1 id="view-title">Report item</h1>
       <div class="topbar-actions">
         <span id="conn-dot" class="conn-dot" title="Live updates"></span>
         <button id="btn-updates" class="icon-btn" aria-label="Updates">

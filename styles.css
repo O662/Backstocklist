@@ -155,7 +155,6 @@ legend { font-weight: 600; padding: 0; margin-bottom: 6px; }
 }
 .card.narrow { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px; text-align: center; }
 .card.narrow form { text-align: left; }
-.logo { width: 72px; height: 72px; border-radius: 18px; align-self: center; }
 
 /* ---------- App shell ---------- */
 .topbar {
